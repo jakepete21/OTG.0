@@ -1,0 +1,5 @@
+{
+  "name": "OTG.0 - AI Commission Auditor",
+  "description": "Automate commission processing by matching vendor statements against internal records using AI to spot discrepancies and generate reports.",
+  "requestFramePermissions": []
+}
