@@ -18,6 +18,9 @@ export default defineConfig(({ mode }) => {
         alias: {
           '@': path.resolve(__dirname, '.'),
         }
-      }
+      },
+      optimizeDeps: {
+        exclude: ['convex'], // Exclude Convex from dependency optimization
+      },
     };
 });

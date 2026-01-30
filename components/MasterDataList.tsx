@@ -1,11 +1,13 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { MasterRecord } from '../types';
-import { Trash2, Edit2, Save, X, Download, Upload, Loader2, AlertTriangle, FileJson, ClipboardPaste, RefreshCcw, Building2, DollarSign, Search } from 'lucide-react';
+import { Trash2, Edit2, Save, X, Download, Upload, Loader2, AlertTriangle, FileJson, ClipboardPaste, RefreshCcw, Building2, DollarSign, Search, Sparkles, CheckCircle2 } from 'lucide-react';
 import { parseMasterDataUnstructured } from '../services/geminiService';
 import { loadDefaultMasterData } from '../services/defaultMasterData';
 import { groupRecordsByAccount, AccountGroup } from '../services/accountGrouping';
 import AccountListItem from './AccountListItem';
 import AccountDetailsModal from './AccountDetailsModal';
+import { analyzeMasterDataCSV, CSVAnalysis } from '../services/csvAnalysisService';
+import { cleanMasterDataCSV } from '../services/csvCleaningService';
 import * as XLSX from 'xlsx';
 
 interface MasterDataListProps {
@@ -28,6 +30,13 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
   const [importError, setImportError] = useState<string | null>(null);
   const [isLoadingDefault, setIsLoadingDefault] = useState(false);
   const [hasLoadedDefault, setHasLoadedDefault] = useState(false);
+  
+  // CSV Analysis State
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [csvAnalysis, setCsvAnalysis] = useState<CSVAnalysis | null>(null);
+  const [showAnalysisModal, setShowAnalysisModal] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [rawCsvData, setRawCsvData] = useState<any[]>([]);
   
   // Drag and Drop State
   const [draggedColIndex, setDraggedColIndex] = useState<number | null>(null);
@@ -553,7 +562,7 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
       onUpdate(newRecords);
   }, [onUpdate, setColumns]);
 
-  // Auto-load default CSV on mount (after processImportData is defined)
+      // Auto-load default CSV on mount (after processImportData is defined)
   useEffect(() => {
     const loadDefaultData = async () => {
       // Only load if no data exists and we haven't loaded yet
@@ -562,6 +571,7 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
         setImportError(null);
         try {
           const rawData = await loadDefaultMasterData();
+          setRawCsvData(rawData); // Store raw data for analysis
           processImportData(rawData);
           setHasLoadedDefault(true);
         } catch (error: any) {
@@ -614,6 +624,7 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
       }
 
       if (isStructured) {
+          setRawCsvData(rawData); // Store raw data for analysis
           processImportData(rawData);
       } else {
         // Fallback for Unstructured
@@ -693,6 +704,7 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
       setImportError(null);
       try {
         const rawData = await loadDefaultMasterData();
+        setRawCsvData(rawData); // Store raw data for analysis
         processImportData(rawData);
         setHasLoadedDefault(true);
       } catch (error: any) {
@@ -701,6 +713,88 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
       } finally {
         setIsLoadingDefault(false);
       }
+    }
+  };
+
+  const handleAnalyzeCSV = async () => {
+    if (rawCsvData.length === 0) {
+      // Try to load default data first
+      try {
+        const rawData = await loadDefaultMasterData();
+        setRawCsvData(rawData);
+        await performAnalysis(rawData);
+      } catch (error: any) {
+        setImportError(`Failed to load CSV for analysis: ${error.message}`);
+      }
+    } else {
+      await performAnalysis(rawCsvData);
+    }
+  };
+
+  const performAnalysis = async (csvData: any[]) => {
+    if (csvData.length === 0) {
+      setImportError('No CSV data available for analysis');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setImportError(null);
+
+    try {
+      // Extract headers from first row
+      const headers = Object.keys(csvData[0]);
+      
+      // Get sample rows (first 20)
+      const sampleRows = csvData.slice(0, 20);
+      
+      // Analyze with Gemini
+      const analysis = await analyzeMasterDataCSV(
+        JSON.stringify(csvData, null, 2),
+        headers,
+        sampleRows
+      );
+      
+      setCsvAnalysis(analysis);
+      setShowAnalysisModal(true);
+    } catch (error: any) {
+      console.error('CSV Analysis Error:', error);
+      setImportError(`Failed to analyze CSV: ${error.message}`);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleCleanAndImport = async () => {
+    if (!csvAnalysis || rawCsvData.length === 0) {
+      setImportError('No analysis results or CSV data available');
+      return;
+    }
+
+    setIsCleaning(true);
+    setImportError(null);
+
+    try {
+      // Clean CSV based on analysis
+      const cleanedRecords = await cleanMasterDataCSV(rawCsvData, csvAnalysis);
+      
+      if (cleanedRecords.length === 0) {
+        throw new Error('No valid records after cleaning');
+      }
+
+      // Update master data
+      onUpdate(cleanedRecords);
+      
+      // Close modal and show success
+      setShowAnalysisModal(false);
+      setCsvAnalysis(null);
+      
+      // Show success message (you could add a toast notification here)
+      alert(`Successfully imported ${cleanedRecords.length} cleaned records!`);
+    } catch (error: any) {
+      console.error('CSV Cleaning Error:', error);
+      setImportError(`Failed to clean and import CSV: ${error.message}`);
+    } finally {
+      setIsCleaning(false);
     }
   };
 
@@ -751,6 +845,15 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
           >
             {isLoadingDefault ? <Loader2 className="animate-spin" size={16} /> : <RefreshCcw size={16} />}
             Reload Default CSV
+          </button>
+
+          <button 
+            onClick={handleAnalyzeCSV}
+            disabled={isAnalyzing || isCleaning}
+            className="flex items-center gap-2 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-xs sm:text-sm font-medium shadow-sm disabled:opacity-50"
+          >
+            {isAnalyzing ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
+            Analyze CSV with Gemini
           </button>
 
           <button 
@@ -901,6 +1004,185 @@ const MasterDataList: React.FC<MasterDataListProps> = ({ data, onUpdate }) => {
           onUpdate={onUpdate}
           allRecords={data}
         />
+      )}
+
+      {/* CSV Analysis Modal */}
+      {showAnalysisModal && csvAnalysis && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-slate-800">CSV Analysis Results</h3>
+              <button 
+                onClick={() => setShowAnalysisModal(false)} 
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-6 flex-1 overflow-y-auto space-y-6">
+              {/* Summary */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h4 className="font-semibold text-blue-900 mb-2">Summary</h4>
+                <p className="text-sm text-blue-800">{csvAnalysis.summary}</p>
+              </div>
+
+              {/* Essential Columns */}
+              <div>
+                <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                  <CheckCircle2 size={18} className="text-green-600" />
+                  Essential Columns ({csvAnalysis.essentialColumns.length})
+                </h4>
+                <div className="space-y-2">
+                  {csvAnalysis.essentialColumns.map((col, idx) => (
+                    <div key={idx} className="bg-green-50 border border-green-200 rounded p-3">
+                      <div className="font-medium text-green-900">{col.columnName}</div>
+                      <div className="text-sm text-green-700 mt-1">{col.reason}</div>
+                      {col.mapsTo && (
+                        <div className="text-xs text-green-600 mt-1">Maps to: {col.mapsTo}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Optional Columns */}
+              {csvAnalysis.optionalColumns.length > 0 && (
+                <div>
+                  <h4 className="font-semibold text-slate-800 mb-3">Optional Columns ({csvAnalysis.optionalColumns.length})</h4>
+                  <div className="space-y-2">
+                    {csvAnalysis.optionalColumns.slice(0, 10).map((col, idx) => (
+                      <div key={idx} className="bg-slate-50 border border-slate-200 rounded p-2">
+                        <div className="font-medium text-slate-700 text-sm">{col.columnName}</div>
+                        <div className="text-xs text-slate-600 mt-1">{col.reason}</div>
+                      </div>
+                    ))}
+                    {csvAnalysis.optionalColumns.length > 10 && (
+                      <div className="text-xs text-slate-500 italic">
+                        ... and {csvAnalysis.optionalColumns.length - 10} more optional columns
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Data Quality Issues */}
+              {csvAnalysis.dataQualityIssues.length > 0 && (
+                <div>
+                  <h4 className="font-semibold text-slate-800 mb-3">Data Quality Issues ({csvAnalysis.dataQualityIssues.length})</h4>
+                  <div className="space-y-2">
+                    {csvAnalysis.dataQualityIssues.map((issue, idx) => (
+                      <div 
+                        key={idx} 
+                        className={`border rounded p-3 ${
+                          issue.severity === 'critical' 
+                            ? 'bg-red-50 border-red-200' 
+                            : issue.severity === 'warning'
+                            ? 'bg-yellow-50 border-yellow-200'
+                            : 'bg-blue-50 border-blue-200'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="font-medium text-sm">
+                              {issue.severity === 'critical' && '🔴 '}
+                              {issue.severity === 'warning' && '⚠️ '}
+                              {issue.severity === 'info' && 'ℹ️ '}
+                              {issue.issue}
+                            </div>
+                            {issue.affectedColumns && issue.affectedColumns.length > 0 && (
+                              <div className="text-xs mt-1">
+                                Affected: {issue.affectedColumns.join(', ')}
+                              </div>
+                            )}
+                            {issue.recommendation && (
+                              <div className="text-xs mt-2 italic">{issue.recommendation}</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Cleaning Suggestions */}
+              {csvAnalysis.cleaningSuggestions.length > 0 && (
+                <div>
+                  <h4 className="font-semibold text-slate-800 mb-3">Cleaning Suggestions ({csvAnalysis.cleaningSuggestions.length})</h4>
+                  <div className="space-y-2">
+                    {csvAnalysis.cleaningSuggestions.map((suggestion, idx) => (
+                      <div key={idx} className="bg-purple-50 border border-purple-200 rounded p-3">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="font-medium text-sm text-purple-900">
+                              {suggestion.operation.replace(/_/g, ' ').toUpperCase()}
+                              {suggestion.priority === 'high' && ' 🔴 HIGH PRIORITY'}
+                              {suggestion.priority === 'medium' && ' 🟡 MEDIUM PRIORITY'}
+                              {suggestion.priority === 'low' && ' 🟢 LOW PRIORITY'}
+                            </div>
+                            <div className="text-sm text-purple-700 mt-1">{suggestion.description}</div>
+                            {suggestion.columns && suggestion.columns.length > 0 && (
+                              <div className="text-xs text-purple-600 mt-1">
+                                Columns: {suggestion.columns.join(', ')}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Duplicate Detection */}
+              <div>
+                <h4 className="font-semibold text-slate-800 mb-3">Duplicate Detection</h4>
+                <div className="bg-slate-50 border border-slate-200 rounded p-3">
+                  <div className="text-sm text-slate-700">
+                    <strong>Method:</strong> {csvAnalysis.duplicateDetection.method}
+                  </div>
+                  {csvAnalysis.duplicateDetection.estimatedDuplicates !== null && (
+                    <div className="text-sm text-slate-700 mt-1">
+                      <strong>Estimated Duplicates:</strong> {csvAnalysis.duplicateDetection.estimatedDuplicates}
+                    </div>
+                  )}
+                  {csvAnalysis.duplicateDetection.recommendation && (
+                    <div className="text-sm text-slate-600 mt-2 italic">
+                      {csvAnalysis.duplicateDetection.recommendation}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3 rounded-b-xl">
+              <button 
+                onClick={() => setShowAnalysisModal(false)}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg text-sm font-medium transition-colors"
+              >
+                Close
+              </button>
+              <button 
+                onClick={handleCleanAndImport}
+                disabled={isCleaning}
+                className="px-4 py-2 bg-purple-600 text-white hover:bg-purple-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isCleaning ? (
+                  <>
+                    <Loader2 className="animate-spin" size={16} />
+                    Cleaning & Importing...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={16} />
+                    Clean & Import
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Paste Modal */}

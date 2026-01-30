@@ -8,10 +8,11 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 
 ### Tech Stack
 - **Frontend**: React 19 + Vite + TypeScript
+- **Backend**: Firebase (Firestore + Cloud Storage)
 - **AI Service**: Google Gemini 2.5 Flash (via @google/genai)
 - **UI Libraries**: Lucide React (icons), Recharts (charts)
 - **Data Processing**: XLSX (Excel/CSV parsing)
-- **State Management**: React useState (local component state)
+- **State Management**: React hooks with Firebase real-time updates
 - **Styling**: Tailwind CSS (inline classes)
 
 ### Current Features
@@ -77,38 +78,39 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 
 ## Architecture Decisions
 
-### Why Client-Side Only?
-- Current implementation is fully client-side
-- No backend/database (data stored in React state)
-- Gemini API called directly from browser
-- **Limitation**: Data lost on refresh
+### Backend Architecture
+- **Firebase Firestore**: NoSQL database for carrier statements, matches, and seller statements
+- **Firebase Cloud Storage**: File storage for carrier statement XLSX files
+- **Real-time Updates**: Firestore `onSnapshot` provides real-time data synchronization
+- **Client-Side Processing**: Statement processing, matching, and seller statement generation happen client-side
+- Data persists across page refreshes
 
 ### AI Integration Pattern
 - Uses Gemini's structured output (JSON schema)
 - Two-step process: column mapping → full analysis
 - Handles both structured (CSV/Excel) and unstructured (PDF/Images) files
+- Gemini API called directly from browser (API key in environment variables)
 
 ### State Management
-- Component-level state (no global store)
-- Props drilling for data flow
-- **Limitation**: No persistence, no multi-user support
+- React hooks (`useCarrierStatements`, `useSellerStatements`, etc.) provide real-time data
+- Firebase handles persistence and synchronization
+- Component-level state for UI interactions
+- Master data still stored in component state (future: migrate to Firestore)
 
-## Known Limitations
+## Current Limitations
 
-1. **No Persistence**: All data lost on page refresh
-2. **No Backend**: No API, no database, no user auth
+1. **Master Data**: Still stored in component state (not persisted)
+2. **No User Authentication**: Single-user application (security rules in test mode)
 3. **No Multi-User**: Single-user application
-4. **No History**: Cannot view past analyses
-5. **No Export**: Reports can't be exported as PDF/Excel
-6. **No Validation**: Limited input validation
-7. **API Key Exposure**: Gemini API key in client code (security risk)
+4. **API Key Exposure**: Gemini API key in client code (security risk - should move to backend)
+5. **Limited Validation**: Basic input validation
 
 ## Future Considerations
 
-- Add backend (Supabase/Next.js API routes)
-- Add database persistence
-- Add user authentication
-- Add analysis history
-- Add proper PDF export
-- Move API key to backend
-- Add RLS for multi-tenant support
+- Migrate master data to Firestore
+- Add user authentication (Firebase Auth)
+- Add proper security rules (currently in test mode)
+- Move Gemini API key to backend/Cloud Functions
+- Add multi-tenant support with proper RLS
+- Add analysis history tracking
+- Enhanced PDF export features

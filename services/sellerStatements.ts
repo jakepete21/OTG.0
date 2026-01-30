@@ -170,13 +170,34 @@ export const generateSellerStatements = (
   // since role splits should sum to 100% of the commission.
   const totalOtgCompAcrossAllGroups = statements.reduce((sum, s) => sum + s.totalOtgComp, 0);
   const totalSellerCompAcrossAllGroups = statements.reduce((sum, s) => sum + s.totalSellerComp, 0);
+  const totalCommissionFromRows = matchedRows.reduce((sum, r) => sum + (r.commissionAmount || 0), 0);
+  const totalRoleSplitsFromRows = matchedRows.reduce((sum, r) => {
+    const roleSum = Object.values(r.roleSplits || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
+    return sum + roleSum;
+  }, 0);
+  
+  // Log totals for debugging
+  console.log(`[generateSellerStatements] Totals verification:`);
+  console.log(`  - Total commission from matched rows: $${totalCommissionFromRows.toFixed(2)}`);
+  console.log(`  - Total role splits from matched rows: $${totalRoleSplitsFromRows.toFixed(2)}`);
+  console.log(`  - Total seller comp across all groups: $${totalSellerCompAcrossAllGroups.toFixed(2)}`);
+  console.log(`  - Total OTG comp across all groups: $${totalOtgCompAcrossAllGroups.toFixed(2)}`);
+  console.log(`  - Statements breakdown:`, statements.map(s => ({
+    roleGroup: s.roleGroup,
+    itemsCount: s.items.length,
+    totalOtgComp: s.totalOtgComp.toFixed(2),
+    totalSellerComp: s.totalSellerComp.toFixed(2),
+    // Verify totals match sum of items
+    itemsSumOtgComp: s.items.reduce((sum, item) => sum + item.otgComp, 0).toFixed(2),
+    itemsSumSellerComp: s.items.reduce((sum, item) => sum + item.sellerComp, 0).toFixed(2),
+  })));
   
   // Debug logging for billing item "757355" - check if it appears in RD1/2 statement
-  const rd12Statement = statements.find(s => s.roleGroup === 'RD1/RD2');
+  const rd12Statement = statements.find(s => s.roleGroup === 'RD1/2');
   if (rd12Statement) {
     const item757355 = rd12Statement.items.find(item => item.otgCompBillingItem === '757355');
     if (item757355) {
-      console.log(`[757355] Found in RD1/2 seller statement - Seller Comp: $${item757355.sellerComp.toFixed(2)}`);
+      console.log(`[757355] Found in RD1/2 seller statement - Seller Comp: $${item757355.sellerComp.toFixed(2)}, OTG Comp: $${item757355.otgComp.toFixed(2)}`);
     } else {
       console.log(`[757355] NOT found in RD1/2 seller statement. Checked ${rd12Statement.items.length} items.`);
     }

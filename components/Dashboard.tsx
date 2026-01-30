@@ -3,9 +3,11 @@ import { MasterRecord, AnalysisResult, ProcessedItem, DiscrepancyType, CarrierSt
 import { analyzeStatement } from '../services/geminiService';
 import { processCarrierStatement } from '../services/carrierStatementPipeline';
 import { detectCarrier } from '../services/carrierStatementProcessor';
-import { detectCarrierAndMonth } from '../services/monthDetection';
-import { storeCarrierStatement, getAllProcessingMonths } from '../services/statementStorage';
-import { UploadCloud, FileText, AlertTriangle, CheckCircle, Loader2, DollarSign, XCircle, FileJson, Calendar } from 'lucide-react';
+import { detectCarrierAndMonth, getMonthKey } from '../services/monthDetection';
+import { useUploadCarrierStatement, useStoreMatches, useRegenerateSellerStatements } from '../services/firebaseHooks';
+import { generateSellerStatements } from '../services/sellerStatements';
+import FilePreviewModalWrapper from './FilePreviewModalWrapper';
+import { UploadCloud, FileText, AlertTriangle, CheckCircle, Loader2, DollarSign, XCircle, FileJson, Calendar, Eye, X, CheckCircle2 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import * as XLSX from 'xlsx';
 
@@ -29,7 +31,48 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [processingType, setProcessingType] = useState<'vendor' | 'carrier' | null>(null);
   const [detectionResult, setDetectionResult] = useState<ReturnType<typeof detectCarrierAndMonth> | null>(null);
+  const [duplicateWarning, setDuplicateWarning] = useState<{ exists: boolean; filename?: string } | null>(null);
+  const [previewFile, setPreviewFile] = useState<{ fileName: string; storageId: string } | null>(null);
+  const [batchUploadResults, setBatchUploadResults] = useState<Array<{
+    fileName: string;
+    status: 'success' | 'error' | 'duplicate' | 'processing';
+    message?: string;
+    detection?: ReturnType<typeof detectCarrierAndMonth>;
+  }>>([]);
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Firebase hooks
+  const uploadCarrierStatement = useUploadCarrierStatement();
+  const storeMatches = useStoreMatches();
+  const regenerateSellerStatements = useRegenerateSellerStatements();
+  
+  /**
+   * Regenerate seller statements from all matches for a processing month
+   */
+  const regenerateSellerStatementsForMonth = async (processingMonth: string) => {
+    try {
+      console.log(`[regenerateSellerStatementsForMonth] Starting regeneration for month: ${processingMonth}`);
+      
+      // Add a small delay to ensure all previous mutations are committed
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Call function to regenerate seller statements
+      const result = await regenerateSellerStatements(processingMonth);
+      
+      console.log(`[regenerateSellerStatementsForMonth] Regeneration complete`);
+      console.log(`[regenerateSellerStatementsForMonth] Total matches processed: ${result.matchedRowsCount}`);
+      console.log(`[regenerateSellerStatementsForMonth] Seller statement groups: ${result.sellerStatementGroups}`);
+      
+      if (result.matchedRowsCount === 0) {
+        console.warn(`[regenerateSellerStatementsForMonth] No matched rows found for ${processingMonth}`);
+      }
+    } catch (error: any) {
+      console.error(`[regenerateSellerStatementsForMonth] Error:`, error);
+      throw error;
+    }
+  };
+  
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -38,6 +81,203 @@ const Dashboard: React.FC<DashboardProps> = ({
       setDragActive(true);
     } else if (e.type === "dragleave") {
       setDragActive(false);
+    }
+  };
+
+  /**
+   * Process multiple files in batch
+   */
+  const processBatchFiles = async (files: File[]) => {
+    if (masterData.length === 0) {
+      setErrorMsg("Master Data is empty. Please add services in the Master Data tab before processing.");
+      return;
+    }
+
+    setIsBatchProcessing(true);
+    setBatchUploadResults([]);
+    setErrorMsg(null);
+    setCarrierStatementResult(null);
+    setAnalysisResult(null);
+
+    const results: Array<{
+      fileName: string;
+      status: 'success' | 'error' | 'duplicate' | 'processing';
+      message?: string;
+      detection?: ReturnType<typeof detectCarrierAndMonth>;
+    }> = [];
+
+    // Filter to only carrier statements (XLSX files)
+    const carrierStatements = files.filter(file => 
+      file.name.toLowerCase().match(/\.(xlsx|xls)$/) && 
+      (file.name.toLowerCase().includes('carrier') || 
+       file.name.toLowerCase().includes('statement') ||
+       detectCarrier(file.name) !== 'Unknown')
+    );
+
+    if (carrierStatements.length === 0) {
+      setErrorMsg("No carrier statement files found. Please upload XLSX files with carrier names in the filename.");
+      setIsBatchProcessing(false);
+      return;
+    }
+
+    // Track which processing months had files uploaded
+    const processingMonthsToRegenerate = new Set<string>();
+    
+    // Process each file
+    for (let i = 0; i < carrierStatements.length; i++) {
+      const file = carrierStatements[i];
+      
+      // Update status to processing
+      results.push({
+        fileName: file.name,
+        status: 'processing',
+      });
+      setBatchUploadResults([...results]);
+
+      try {
+        // Detect carrier and processing month
+        const detection = detectCarrierAndMonth(file.name);
+        
+        if (!detection.carrier) {
+          results[i] = {
+            fileName: file.name,
+            status: 'error',
+            message: `Could not detect carrier type from filename`,
+            detection,
+          };
+          setBatchUploadResults([...results]);
+          continue;
+        }
+        
+        if (!detection.processingMonth) {
+          results[i] = {
+            fileName: file.name,
+            status: 'error',
+            message: `Could not detect statement month from filename`,
+            detection,
+          };
+          setBatchUploadResults([...results]);
+          continue;
+        }
+
+        const processingMonthKey = getMonthKey(detection.processingMonth);
+
+        // Process the file (without regenerating seller statements yet)
+        await processSingleCarrierFile(file, detection, results, i);
+        
+        // Track this processing month for regeneration
+        processingMonthsToRegenerate.add(processingMonthKey);
+        
+      } catch (error: any) {
+        results[i] = {
+          fileName: file.name,
+          status: 'error',
+          message: error.message || 'Failed to process file',
+        };
+        setBatchUploadResults([...results]);
+      }
+    }
+
+    // Regenerate seller statements for each processing month that had files uploaded
+    // This ensures all carriers are combined
+    console.log(`[processBatchFiles] Regenerating seller statements for ${processingMonthsToRegenerate.size} processing month(s)`);
+    for (const processingMonth of processingMonthsToRegenerate) {
+      console.log(`[processBatchFiles] Regenerating for month: ${processingMonth}`);
+      await regenerateSellerStatementsForMonth(processingMonth);
+    }
+
+    setIsBatchProcessing(false);
+    
+    // Show summary
+    const successCount = results.filter(r => r.status === 'success').length;
+    const duplicateCount = results.filter(r => r.status === 'duplicate').length;
+    const errorCount = results.filter(r => r.status === 'error').length;
+    
+    if (successCount > 0 || duplicateCount > 0 || errorCount > 0) {
+      setErrorMsg(
+        `Batch upload complete: ${successCount} successful, ${duplicateCount} duplicates skipped, ${errorCount} errors`
+      );
+    }
+  };
+
+  /**
+   * Process a single carrier file
+   */
+  const processSingleCarrierFile = async (
+    file: File,
+    detection: ReturnType<typeof detectCarrierAndMonth>,
+    results: Array<{
+      fileName: string;
+      status: 'success' | 'error' | 'duplicate' | 'processing';
+      message?: string;
+      detection?: ReturnType<typeof detectCarrierAndMonth>;
+    }>,
+    index: number
+  ) => {
+    const processingMonthKey = getMonthKey(detection.processingMonth!);
+    const statementMonthKey = getMonthKey(detection.statementMonth!);
+
+    try {
+      // Process carrier statement first
+      const result = await processCarrierStatement(file, masterData);
+      
+      // Upload file and metadata to Firebase (handles file upload internally)
+      const uploadStatementResult = await uploadCarrierStatement(file, {
+        filename: file.name,
+        carrier: detection.carrier!,
+        statementMonth: statementMonthKey,
+        processingMonth: processingMonthKey,
+      });
+
+      // Process statement: store matches and regenerate seller statements from ALL carriers
+      if (uploadStatementResult.statementId) {
+        // Store matched rows (storeMatches handles batching internally)
+        console.log(`[processSingleCarrierFile] Storing ${result.matchedRows.length} matched rows for ${detection.carrier}`);
+        await storeMatches(
+          processingMonthKey,
+          uploadStatementResult.statementId,
+          result.matchedRows
+        );
+        
+        // Note: Seller statement regeneration happens after ALL files in batch are processed
+        // This ensures all carriers are combined. See processBatchFiles for the regeneration call.
+        
+        // Set result status
+        if (uploadStatementResult.isReplacement) {
+          results[index] = {
+            fileName: file.name,
+            status: 'duplicate',
+            message: `Duplicate detected - replaced existing statement`,
+            detection,
+          };
+        } else {
+          results[index] = {
+            fileName: file.name,
+            status: 'success',
+            message: `Successfully uploaded and processed`,
+            detection,
+          };
+        }
+        setBatchUploadResults([...results]);
+        return;
+      }
+
+      results[index] = {
+        fileName: file.name,
+        status: 'success',
+        message: `Successfully processed: ${result.carrierStatementRows.length} rows extracted, ${result.matchedRows.length} matched`,
+        detection,
+      };
+      setBatchUploadResults([...results]);
+
+    } catch (error: any) {
+      results[index] = {
+        fileName: file.name,
+        status: 'error',
+        message: error.message || 'Failed to process file',
+        detection,
+      };
+      setBatchUploadResults([...results]);
     }
   };
 
@@ -62,6 +302,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       if (isCarrierStatement) {
         setProcessingType('carrier');
         setDetectionResult(null);
+        setDuplicateWarning(null);
         try {
           // Detect carrier and processing month
           const detection = detectCarrierAndMonth(file.name);
@@ -75,24 +316,49 @@ const Dashboard: React.FC<DashboardProps> = ({
             throw new Error(`Could not detect statement month from filename: ${file.name}. Please ensure filename contains month information (e.g., "2025-10" or "October 2025").`);
           }
           
-          // Process carrier statement
+          const processingMonthKey = getMonthKey(detection.processingMonth);
+          const statementMonthKey = getMonthKey(detection.statementMonth!);
+          
+          // Process carrier statement first
           const result = await processCarrierStatement(file, masterData);
           
-          // Store statement in storage
-          const statement = {
-            id: `stmt-${Date.now()}-${Math.random()}`,
+          // Upload file and metadata to Firebase (handles file upload internally)
+          const uploadResult = await uploadCarrierStatement(file, {
             filename: file.name,
             carrier: detection.carrier,
-            statementMonth: detection.statementMonth!,
-            processingMonth: detection.processingMonth,
-            uploadedAt: new Date(),
-            rows: result.carrierStatementRows,
-            matchedRows: result.matchedRows,
-            sellerStatements: result.sellerStatements,
-            disputes: result.disputes,
-          };
+            statementMonth: statementMonthKey,
+            processingMonth: processingMonthKey,
+          });
           
-          storeCarrierStatement(statement);
+          // Store file info for preview (use fileUrl from Firebase)
+          setPreviewFile({
+            fileName: file.name,
+            storageId: uploadResult.fileUrl,
+          });
+          
+          // Show warning if this was a replacement
+          if (uploadResult.isReplacement) {
+            setDuplicateWarning({
+              exists: true,
+              filename: file.name,
+            });
+          }
+          
+          // Process statement: store matches and regenerate seller statements from ALL carriers
+          if (uploadResult.statementId) {
+            // Store matched rows (storeMatches handles batching internally)
+            console.log(`[processFile] Storing ${result.matchedRows.length} matched rows for ${detection.carrier}`);
+            await storeMatches(
+              processingMonthKey,
+              uploadResult.statementId,
+              result.matchedRows
+            );
+            
+            // Regenerate seller statements from ALL matches for this processing month
+            // Add a small delay to ensure all matches are stored before regenerating
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await regenerateSellerStatementsForMonth(processingMonthKey);
+          }
           
           // Set result for display
           setCarrierStatementResult(result);
@@ -112,6 +378,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             console.log(`- Processing Month: ${detection.processingMonthLabel}`);
             console.log(`- Rows extracted: ${result.carrierStatementRows.length}`);
             console.log(`- Matched rows: ${result.matchedRows.length}`);
+            console.log(`- Stored in Firebase: ${uploadResult.statementId}`);
           }
         } catch (error: any) {
           console.error('Error processing carrier statement:', error);
@@ -198,14 +465,24 @@ const Dashboard: React.FC<DashboardProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      processFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length === 1) {
+        processFile(files[0]);
+      } else {
+        processBatchFiles(files);
+      }
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      processFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      const files = Array.from(e.target.files);
+      if (files.length === 1) {
+        processFile(files[0]);
+      } else {
+        processBatchFiles(files);
+      }
     }
   };
 
@@ -233,7 +510,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       <div 
         className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-colors ${
           dragActive ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 hover:border-indigo-400 hover:bg-slate-50'
-        } ${isProcessing ? 'opacity-50 pointer-events-none' : ''}`}
+        } ${(isProcessing || isBatchProcessing) ? 'opacity-50 pointer-events-none' : ''}`}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
         onDragOver={handleDrag}
@@ -244,19 +521,26 @@ const Dashboard: React.FC<DashboardProps> = ({
           type="file" 
           className="hidden" 
           onChange={handleFileChange}
-          accept=".csv,.pdf,.png,.jpg,.jpeg,.xlsx,.xls,.json" 
+          accept=".csv,.pdf,.png,.jpg,.jpeg,.xlsx,.xls,.json"
+          multiple
         />
         
-        {isProcessing ? (
+        {(isProcessing || isBatchProcessing) ? (
           <div className="flex flex-col items-center justify-center py-6">
             <Loader2 className="animate-spin text-indigo-600 mb-4" size={48} />
             <p className="text-lg font-medium text-slate-700">
-              {processingType === 'carrier' ? 'Processing Carrier Statement...' : 'Analyzing Statement...'}
+              {isBatchProcessing 
+                ? `Processing ${batchUploadResults.length} file${batchUploadResults.length !== 1 ? 's' : ''}...`
+                : processingType === 'carrier' 
+                  ? 'Processing Carrier Statement...' 
+                  : 'Analyzing Statement...'}
             </p>
             <p className="text-sm text-slate-500 mt-2">
-              {processingType === 'carrier' 
-                ? 'Extracting data, matching records, detecting disputes, and generating seller statements.'
-                : 'Gemini is extracting data and matching records.'}
+              {isBatchProcessing
+                ? 'Checking for duplicates, extracting data, and processing each file.'
+                : processingType === 'carrier' 
+                  ? 'Extracting data, matching records, detecting disputes, and generating seller statements.'
+                  : 'Gemini is extracting data and matching records.'}
             </p>
           </div>
         ) : (
@@ -270,6 +554,8 @@ const Dashboard: React.FC<DashboardProps> = ({
               <br />
               <span className="text-xs text-indigo-600 mt-1 block">
                 Carrier statements (XLSX) will be processed with full automation pipeline.
+                <br />
+                You can upload multiple files at once - duplicates will be automatically detected and skipped.
               </span>
             </p>
           </div>
@@ -283,23 +569,105 @@ const Dashboard: React.FC<DashboardProps> = ({
         </div>
       )}
 
+      {duplicateWarning && duplicateWarning.exists && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-3 rounded-lg flex items-center gap-3">
+          <AlertTriangle size={20} />
+          <div>
+            <p className="font-medium">Duplicate Statement Detected</p>
+            <p className="text-sm">
+              A statement for this carrier and processing month already exists ({duplicateWarning.filename}). 
+              The existing statement has been replaced with the new upload.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Upload Results */}
+      {batchUploadResults.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50">
+            <h3 className="font-bold text-slate-800">
+              Batch Upload Results ({batchUploadResults.length} files)
+            </h3>
+            {isBatchProcessing && (
+              <p className="text-sm text-slate-500 mt-1">Processing files...</p>
+            )}
+          </div>
+          <div className="divide-y divide-slate-100">
+            {batchUploadResults.map((result, idx) => (
+              <div
+                key={idx}
+                className={`px-6 py-4 flex items-start gap-3 ${
+                  result.status === 'success' ? 'bg-green-50/50' :
+                  result.status === 'duplicate' ? 'bg-amber-50/50' :
+                  result.status === 'error' ? 'bg-red-50/50' :
+                  'bg-slate-50/50'
+                }`}
+              >
+                {result.status === 'processing' && (
+                  <Loader2 className="animate-spin text-indigo-600 flex-shrink-0 mt-0.5" size={18} />
+                )}
+                {result.status === 'success' && (
+                  <CheckCircle2 className="text-green-600 flex-shrink-0 mt-0.5" size={18} />
+                )}
+                {result.status === 'duplicate' && (
+                  <AlertTriangle className="text-amber-600 flex-shrink-0 mt-0.5" size={18} />
+                )}
+                {result.status === 'error' && (
+                  <X className="text-red-600 flex-shrink-0 mt-0.5" size={18} />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-slate-800 text-sm">{result.fileName}</p>
+                  {result.detection && (
+                    <p className="text-xs text-slate-500 mt-1">
+                      Carrier: {result.detection.carrier || 'Unknown'} | 
+                      Processing Month: {result.detection.processingMonthLabel || 'Unknown'}
+                    </p>
+                  )}
+                  {result.message && (
+                    <p className={`text-xs mt-1 ${
+                      result.status === 'success' ? 'text-green-700' :
+                      result.status === 'duplicate' ? 'text-amber-700' :
+                      'text-red-700'
+                    }`}>
+                      {result.message}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Carrier Statement Results Section */}
       {carrierStatementResult && (
         <div className="animate-fade-in space-y-8">
           {/* Processing Month Info */}
           {detectionResult?.processingMonthLabel && (
-            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex items-center gap-3">
-              <Calendar className="text-indigo-600 flex-shrink-0" size={20} />
-              <div>
-                <p className="text-sm font-medium text-indigo-900">
-                  Processing Month: <strong>{detectionResult.processingMonthLabel}</strong>
-                </p>
-                {detectionResult.carrier && (
-                  <p className="text-xs text-indigo-700">
-                    Carrier: {detectionResult.carrier} | Statement Month: {detectionResult.statementMonth?.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Calendar className="text-indigo-600 flex-shrink-0" size={20} />
+                <div>
+                  <p className="text-sm font-medium text-indigo-900">
+                    Processing Month: <strong>{detectionResult.processingMonthLabel}</strong>
                   </p>
-                )}
+                  {detectionResult.carrier && (
+                    <p className="text-xs text-indigo-700">
+                      Carrier: {detectionResult.carrier} | Statement Month: {detectionResult.statementMonth?.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                    </p>
+                  )}
+                </div>
               </div>
+              {previewFile && (
+                <button
+                  onClick={() => setPreviewFile(previewFile)}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-300 text-indigo-700 text-sm font-medium rounded-lg hover:bg-indigo-50 transition-colors"
+                >
+                  <Eye size={16} />
+                  View File
+                </button>
+              )}
             </div>
           )}
           
@@ -523,6 +891,15 @@ const Dashboard: React.FC<DashboardProps> = ({
            </div>
 
         </div>
+      )}
+
+      {/* File Preview Modal */}
+      {previewFile && (
+        <FilePreviewModalWrapper
+          fileName={previewFile.fileName}
+          storageId={previewFile.storageId}
+          onClose={() => setPreviewFile(null)}
+        />
       )}
     </div>
   );

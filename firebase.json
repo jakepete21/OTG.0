@@ -1,0 +1,12 @@
+{
+  "firestore": {
+    "rules": "firestore/firestore.rules",
+    "indexes": "firestore/firestore.indexes.json"
+  },
+  "storage": [
+    {
+      "bucket": "otg0-109bd.firebasestorage.app",
+      "rules": "firestore/storage.rules"
+    }
+  ]
+}

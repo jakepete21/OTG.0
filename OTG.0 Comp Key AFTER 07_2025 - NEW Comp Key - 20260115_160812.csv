@@ -1,4 +1,64 @@
-ST,Account **CARRIER**,Carrier Comp Type (OTG PDNG | OTG ADD | OTG-Zayo=zMAP | NEW=On comp statement PDNG in Monday),Carrier Relationship,Service Provider,Status / Type,Opportunity Promo Year (KEEP ORIGINAL OPP),"Promo Year Revenue / OG SF Opp (zMAP=new to OTG, KEEP ORIGINAL OPP)",Install Date OR OTG Payable Date,OTG Comp Billing item,Cust. ACTIVE BAN,Historic BAN - non-ZNS,Item Desc. from current Carrier Statement,Monthly Comp % to OTG (from Carrier Statement),Quantity,Price,"Monthly Unit Price (Qty x Price; QRC/SEMI/YRC x 4,6,or 12)",Expected Monthly OTG Comp % (from Comp Key col R),Monthly Comp to OTG (Expected %),One-Time Unit Price / SPIFF,One-Time Comp % to OTG,One-Time Comp Expected to OTG,Cust. Billed Type,COMP 1,COMP 2,COMP 3,COMP 4,before 07/2025 COMP 1,before 07/2025 COMP 2,before 07/2025 COMP 3,before 07/2025 COMP 4,NOTES (RED=Differs from before comp key),MISSING OTG COMP,SVC Change Date,Prev. Unit Price,OTG Compensable Product Name,MISSING MONDAY,Sig Date,Term,Location Name,Service Address,Order #,Circuit ID,Unique Order Details SOC / SC,TED,Renewal Details,Monday Product Comments (EXCLUDE SPLIT NOTES/VALUES),Monday Item ID,COMP CALC - Monthly OTG Received Funds,OTG PD since July Seller Statement June Deposit,July Seller Statement - June Deposit,Aug Seller Stmt - July Deposit,Sept Seller Stmt - Aug Deposit,Oct Seller Stmt - Sept Deposit,Nov Seller Stmt - Oct Deposit,Dec Seller Stmt - Nov Deposit,Jan Seller Stmt - Dec Deposit,Feb Seller Stmt - Jan Deposit,Mar Seller Stmt - Feb Deposit,Apr Seller Stmt - Mar Deposit,May Seller Stmt - Apr Deposit,June Seller Stmt - May Deposit
+ST,Account **CARRIER**,"Carrier Comp Type
+OTG PDNG
+OTG ADD
+OTG - Zayo = zMAP
+NEW = On comp statement PDNG in Monday","Carrier
+Relationship",Service Provider,Status / Type,"Opportunity
+""Promo Year""
+
+**KEEP ORIGINAL OPP**","Promo Year Revenue / OG SF Opp
+zMAP = anything new to OTG
+
+**KEEP ORIGINAL OPP**","Install Date
+OR
+OTG payable Date",OTG Comp Billing item,"Cust. 
+ACTIVE BAN","Historic BAN
+ - non-ZNS",Item Desc. from current Carrier Statement,"PAYING
+Monthly 
+Comp % to OTG
+from current Carrier Statement",Quantity,Price,"Monthly 
+Unit Price
+
+Quantity x Price
+
+QRC/SEMI//YRC x 4, 6, or 12","EXPECTED/Mo. 
+OTG Comp % 
+ - column R Comp Key","Monthly Comp to OTG per EXPECTED
+Comp %","One-Time 
+Unit Price
+
+/ SPIFF","One-Time
+Comp % to OTG","One-Time Comp 
+Expected to OTG",Cust. Billed Type,COMP 1,COMP 2,COMP 3,COMP 4,"before 07/2025
+COMP 1","before 07/2025
+COMP 2","before 07/2025
+COMP 3","before 07/2025
+COMP 4","NOTES
+
+RED Highlight = Differs from before comp key",MISSING OTG COMP,SVC Change Date,Prev. Unit Price,"OTG Compensable Product
+
+NAME",MISSING MONDAY,Sig Date,Term,Location Name,Service Address,Order #,Circuit ID,"Unique Order Details
+SOC / SC",TED,Renewal Details,"Monday Product Comments
+
+ - EXCLUDE SPLIT NOTES/VALUES",Monday Item ID,"COMP
+CALC
+
+Mo. OTG RCVD 
+Funds>>","OTG PD since
+July Seller Statemen
+June Deposit","July Seller Statement
+ - June Deposit","Aug Seller Stmt
+ - July Deposit","Sept Seller Stmt
+ - Aug Deposit","Oct Seller Stmt
+ - Sept Deposit","Nov Seller Stmt
+ - Oct Deposit","Dec Seller Stmt
+ - Nov Deposit","Jan Seller Stmt
+ - Dec Deposit","Feb Seller Stmt
+ - Jan Deposit","Mar Seller Stmt
+ - Feb Deposit","Apr Seller Stmt
+ - Mar Deposit","May Seller Stmt
+ - Apr Deposit","June Seller Stmt
+ - May Deposit"
 NV,(OSIT),OTG,Direct,Zayo,Active,2025,,05/13/2025,757355,41890,41890,Dark Fiber,,1.00,$150.00,$150.00,15.00%,$22.50,$0.00,0.00%,$0.00,MRC,RD1,,OVR,OTG.0-ZF,NOT ON OG COMP KEY,,OVR,,01/08/26 VP: TBD if update split OTG.0-ZF; 08/18/25 VP: MRC PDNG;  One-Time PMT,,,,,,06/11/2024,60,500 E Warm Springs Rd/Fl-1/Rm-Server,1 Harrahs Ct/Fl-2/Rm-255,2375486,"F24M-0240851, FBDK/2375486//ZFS",SC-753667,05/12/2030,,,,,,,$459.68,$285.00,$285.00,$285.00,$285.00,$285.00,,,,,
 NV,(OSIT),OTG,Direct,Zayo,Active,2025,,05/13/2025,757355,41890,41890,Dark Fiber,,1.00,$150.00,$150.00,15.00%,$22.50,$0.00,0.00%,$0.00,MRC,RD1,,OVR,OTG.0-ZF,NOT ON OG COMP KEY,,OVR,,01/08/26 VP: TBD if update split OTG.0-ZF; 08/18/25 VP: MRC PDNG;  One-Time PMT,,,,,,06/11/2024,60,1 Harrahs Ct/Fl-2/Rm-255,500 E Warm Springs Rd/Fl-1/Rm-Server,2375486,"F24M-0240852, FBDK/2375486//ZFS",SC-786302,05/12/2030,,,,,,,,,,,,,,,,,
 NV,(OSIT),OTG,Direct,Zayo,Active,2025,,05/13/2025,757355,41890,41890,Dark Fiber,,1.00,$100.00,$100.00,15.00%,$15.00,$0.00,0.00%,$0.00,MRC,RD1,,OVR,OTG.0-ZF,NOT ON OG COMP KEY,,OVR,,01/08/26 VP: TBD if update split OTG.0-ZF; 08/18/25 VP: MRC PDNG;  One-Time PMT,,,,,,06/11/2024,60,7160 Bermuda Rd/Fl-2/Rm-Data-2A,1 Harrahs Ct/Fl-2/Rm-255,2375486,"F24M-0240853, FBDK/2375486//ZFS",SC-786303,05/12/2030,,,,,,,,,,,,,,,,,

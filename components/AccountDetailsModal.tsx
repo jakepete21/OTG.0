@@ -307,6 +307,9 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
     };
   }, [account.lineItems]);
 
+  // Check if we should show all columns dynamically (for Master Data 2 with many columns)
+  const showAllColumns = columns.length > 20;
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div
@@ -319,7 +322,7 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
             <h2 className="text-xl font-bold text-slate-800 mb-1 truncate">{account.accountCarrier}</h2>
             <p className="text-sm text-slate-600 truncate">{account.otgCompBillingItem}</p>
             <p className="text-xs text-slate-500 mt-2">
-              {account.summary.lineItemCount} line item{account.summary.lineItemCount !== 1 ? 's' : ''}
+              {account.summary.lineItemCount} line item{account.summary.lineItemCount !== 1 ? 's' : ''} • {columns.length} columns
             </p>
           </div>
           <button
@@ -334,29 +337,49 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
         <div className="flex-1 overflow-hidden flex flex-col">
           <div className="overflow-y-auto overflow-x-auto flex-1">
             {/* List Header */}
-            <div className="sticky top-0 z-20 bg-slate-50 border-b border-slate-200 px-4 py-3">
-              <div className="flex items-center gap-3 text-xs font-semibold text-slate-600 uppercase tracking-wider" style={{ minWidth: '2200px' }}>
-                <div className="w-12 flex-shrink-0">ST</div>
-                <div className="w-32 flex-shrink-0">OTG Comp Billing Item</div>
-                <div className="w-40 flex-shrink-0">Service Provider</div>
-                <div className="w-32 flex-shrink-0">Status/Type</div>
-                <div className="w-48 flex-shrink-0">Item Description</div>
-                <div className="w-28 flex-shrink-0">Active BAN</div>
-                <div className="w-24 flex-shrink-0 text-right">Qty</div>
-                <div className="w-32 flex-shrink-0 text-right">Price</div>
-                <div className="w-36 flex-shrink-0 text-right">Monthly Unit Price</div>
-                <div className="w-32 flex-shrink-0 text-right">Monthly Comp</div>
-                <div className="w-28 flex-shrink-0">COMP 1</div>
-                <div className="w-28 flex-shrink-0">COMP 2</div>
-                <div className="w-28 flex-shrink-0">COMP 3</div>
-                <div className="w-28 flex-shrink-0">COMP 4</div>
-                <div className="w-32 flex-shrink-0">Location</div>
-                <div className="w-40 flex-shrink-0">Order #</div>
-                <div className="w-40 flex-shrink-0">Circuit ID</div>
-                <div className="w-32 flex-shrink-0">Install Date</div>
-                <div className="w-24 flex-shrink-0 text-right">Actions</div>
+            {showAllColumns ? (
+              // Dynamic header for all columns
+              <div className="sticky top-0 z-20 bg-slate-50 border-b border-slate-200 px-4 py-3">
+                <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 uppercase tracking-wider" style={{ minWidth: `${columns.length * 150}px` }}>
+                  {columns.map((col) => (
+                    <div 
+                      key={col.key} 
+                      className={`flex-shrink-0 ${col.type === 'number' || col.type === 'percent' ? 'text-right' : ''}`}
+                      style={{ width: col.type === 'number' || col.type === 'percent' ? '120px' : '150px' }}
+                      title={col.label}
+                    >
+                      <div className="truncate">{col.label}</div>
+                    </div>
+                  ))}
+                  <div className="w-24 flex-shrink-0 text-right">Actions</div>
+                </div>
               </div>
-            </div>
+            ) : (
+              // Fixed header for standard columns
+              <div className="sticky top-0 z-20 bg-slate-50 border-b border-slate-200 px-4 py-3">
+                <div className="flex items-center gap-3 text-xs font-semibold text-slate-600 uppercase tracking-wider" style={{ minWidth: '2200px' }}>
+                  <div className="w-12 flex-shrink-0">ST</div>
+                  <div className="w-32 flex-shrink-0">OTG Comp Billing Item</div>
+                  <div className="w-40 flex-shrink-0">Service Provider</div>
+                  <div className="w-32 flex-shrink-0">Status/Type</div>
+                  <div className="w-48 flex-shrink-0">Item Description</div>
+                  <div className="w-28 flex-shrink-0">Active BAN</div>
+                  <div className="w-24 flex-shrink-0 text-right">Qty</div>
+                  <div className="w-32 flex-shrink-0 text-right">Price</div>
+                  <div className="w-36 flex-shrink-0 text-right">Monthly Unit Price</div>
+                  <div className="w-32 flex-shrink-0 text-right">Monthly Comp</div>
+                  <div className="w-28 flex-shrink-0">COMP 1</div>
+                  <div className="w-28 flex-shrink-0">COMP 2</div>
+                  <div className="w-28 flex-shrink-0">COMP 3</div>
+                  <div className="w-28 flex-shrink-0">COMP 4</div>
+                  <div className="w-32 flex-shrink-0">Location</div>
+                  <div className="w-40 flex-shrink-0">Order #</div>
+                  <div className="w-40 flex-shrink-0">Circuit ID</div>
+                  <div className="w-32 flex-shrink-0">Install Date</div>
+                  <div className="w-24 flex-shrink-0 text-right">Actions</div>
+                </div>
+              </div>
+            )}
 
             {/* Line Items List */}
             {account.lineItems.length === 0 ? (
@@ -367,6 +390,137 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
               <div>
                 {account.lineItems.map((record) => {
                   const isEditing = editingId === record.id;
+
+                  // If showing all columns, render dynamically
+                  if (showAllColumns) {
+                    return (
+                      <div
+                        key={record.id}
+                        className={`border-b border-slate-100 transition-all group ${
+                          isEditing
+                            ? 'bg-indigo-50/50 shadow-sm'
+                            : 'bg-white hover:bg-slate-50/80'
+                        }`}
+                      >
+                        {isEditing ? (
+                          // Dynamic editing mode for all columns
+                          <div className="px-4 py-3 flex items-center gap-2" style={{ minWidth: `${columns.length * 150}px` }}>
+                            {columns.map((col) => {
+                              const value = editForm[col.key] !== undefined ? editForm[col.key] : record[col.key];
+                              const inputType = col.type === 'number' || col.type === 'percent' ? 'number' : 'text';
+                              
+                              return (
+                                <div
+                                  key={col.key}
+                                  className={`flex-shrink-0 ${col.type === 'number' || col.type === 'percent' ? 'text-right' : ''}`}
+                                  style={{ width: col.type === 'number' || col.type === 'percent' ? '120px' : '150px' }}
+                                >
+                                  <input
+                                    type={inputType}
+                                    step={col.type === 'percent' ? '0.01' : col.type === 'number' ? '0.01' : undefined}
+                                    className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                    value={value !== undefined && value !== null ? String(value) : ''}
+                                    onChange={e => {
+                                      const newValue = col.type === 'number' || col.type === 'percent' 
+                                        ? (e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)
+                                        : e.target.value;
+                                      setEditForm({ ...editForm, [col.key]: newValue });
+                                    }}
+                                    placeholder={col.label}
+                                    title={col.label}
+                                  />
+                                </div>
+                              );
+                            })}
+                            <div className="w-24 flex-shrink-0 flex justify-end gap-2">
+                              <button
+                                onClick={handleSave}
+                                className="p-1.5 text-green-600 hover:bg-green-50 rounded transition-colors"
+                                title="Save"
+                              >
+                                <Save size={14} />
+                              </button>
+                              <button
+                                onClick={handleCancel}
+                                className="p-1.5 text-slate-500 hover:bg-slate-100 rounded transition-colors"
+                                title="Cancel"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          // Dynamic view mode for all columns
+                          <div className="px-4 py-3 flex items-start gap-2" style={{ minWidth: `${columns.length * 150}px` }}>
+                            {columns.map((col) => {
+                              const value = record[col.key];
+                              const strValue = value !== undefined && value !== null ? String(value) : '';
+                              const isLong = strValue.length > 30;
+                              const isExpanded = expandedCell?.recordId === record.id && expandedCell?.field === col.key;
+                              
+                              return (
+                                <div
+                                  key={col.key}
+                                  className={`flex-shrink-0 ${col.type === 'number' || col.type === 'percent' ? 'text-right' : ''}`}
+                                  style={{ width: col.type === 'number' || col.type === 'percent' ? '120px' : '150px' }}
+                                >
+                                  {isLong ? (
+                                    <button
+                                      onClick={() => setExpandedCell(isExpanded ? null : { recordId: record.id, field: col.key })}
+                                      className="w-full text-left text-sm text-slate-700 hover:bg-slate-100 rounded px-1 py-0.5 -mx-1 -my-0.5 transition-colors"
+                                      title={isExpanded ? 'Click to collapse' : 'Click to expand'}
+                                    >
+                                      {isExpanded ? (
+                                        <div className="break-words whitespace-normal">
+                                          {strValue}
+                                        </div>
+                                      ) : (
+                                        <div className="truncate">
+                                          {strValue.substring(0, 30)}...
+                                        </div>
+                                      )}
+                                    </button>
+                                  ) : (
+                                    <div className="text-sm text-slate-700 truncate" title={strValue}>
+                                      {col.type === 'number' || col.type === 'percent' ? (
+                                        typeof value === 'number' ? (
+                                          col.type === 'percent' 
+                                            ? `${(value * 100).toFixed(2)}%`
+                                            : value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                        ) : (
+                                          strValue
+                                        )
+                                      ) : (
+                                        strValue || '-'
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            <div className="w-24 flex-shrink-0 flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => handleEditClick(record)}
+                                className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                                title="Edit"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleDelete(record.id)}
+                                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                                title="Delete"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  // Standard rendering for fixed columns
                   const { 
                     st, otgCompBillingItem, serviceType, statusType, itemDesc, activeBan, quantity, priceNum, 
                     monthlyUnitPriceNum, monthlyCompNum, comp1, comp2, comp3, comp4,
@@ -383,16 +537,17 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
                       }`}
                     >
                       {isEditing ? (
+                        // Standard editing mode for fixed columns
                         <div className="px-4 py-3 flex items-center gap-3" style={{ minWidth: '2200px' }}>
-                          <div className="w-12 flex-shrink-0">
-                            <input
-                              type="text"
-                              className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                              value={String(getFieldValue(editForm as MasterRecord, 'ST', 'st') || editForm.ST || editForm.st || '')}
-                              onChange={e => setEditForm({ ...editForm, ST: e.target.value, st: e.target.value })}
-                              placeholder="ST"
-                            />
-                          </div>
+                            <div className="w-12 flex-shrink-0">
+                              <input
+                                type="text"
+                                className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                value={String(getFieldValue(editForm as MasterRecord, 'ST', 'st') || editForm.ST || editForm.st || '')}
+                                onChange={e => setEditForm({ ...editForm, ST: e.target.value, st: e.target.value })}
+                                placeholder="ST"
+                              />
+                            </div>
                           <div className="w-32 flex-shrink-0">
                             <input
                               type="text"

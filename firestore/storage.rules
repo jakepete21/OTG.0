@@ -1,0 +1,9 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Carrier statements - allow read/write for now (update for production with auth)
+    match /carrier-statements/{allPaths=**} {
+      allow read, write: if true;
+    }
+  }
+}

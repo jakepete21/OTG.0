@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+.env.local
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +23,16 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Cursor IDE
+.cursor/
+
+# Build artifacts
+.vite/
+
+# CSV backups (keep reformatted version)
+*_BACKUP.csv
+2*.csv
+
+# Firebase (keep config files, exclude sensitive data)
+# .firebaserc is kept for project reference

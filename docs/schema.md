@@ -196,6 +196,84 @@ interface ProcessingMonthData {
 }
 ```
 
+## Firebase Backend Schema (Current Implementation)
+
+The application uses Firebase Firestore as the backend database. The schema is defined in `firestore/firestore.rules` and `firestore/firestore.indexes.json`.
+
+### Collections
+
+#### `carrierStatements`
+Stores uploaded carrier statement files and their metadata.
+
+**Fields**:
+- `id` (string) - Auto-generated document ID
+- `filename` (string) - Original filename
+- `carrier` (string) - Carrier type: "GoTo" | "Lumen" | "MetTel" | "TBO" | "Zayo" | "Allstream"
+- `statementMonth` (string) - Statement month in "YYYY-MM" format
+- `processingMonth` (string) - Processing month in "YYYY-MM" format
+- `fileUrl` (string) - Firebase Cloud Storage URL
+- `uploadedAt` (Timestamp) - Timestamp when uploaded
+
+**Indexes** (defined in `firestore/firestore.indexes.json`):
+- `processingMonth` (ascending) - Single-field index
+- `carrier` (ascending) + `processingMonth` (ascending) - Composite index
+
+#### `matches`
+Stores matched rows per processing month.
+
+**Fields**:
+- `id` (string) - Auto-generated document ID
+- `processingMonth` (string) - Processing month in "YYYY-MM" format
+- `matchedRow` (object) - MatchedRow object
+- `carrierStatementId` (string) - Reference to source carrier statement document ID
+- `createdAt` (Timestamp) - Timestamp when created
+
+**Indexes**:
+- `processingMonth` (ascending) - Single-field index
+- `carrierStatementId` (ascending) - Single-field index
+
+#### `sellerStatements`
+Stores processed seller statements grouped by role group.
+
+**Fields**:
+- `id` (string) - Auto-generated document ID
+- `processingMonth` (string) - Processing month in "YYYY-MM" format
+- `roleGroup` (string) - Role group: "RD1/2" | "RD3/4" | "RM1/2" | "RM3/4" | "OVR/RD5" | "OTG"
+- `items` (array) - Array of SellerStatementItem objects
+- `totalOtgComp` (number) - Total OTG commission
+- `totalSellerComp` (number) - Total seller commission
+- `processedAt` (Timestamp) - Timestamp when processed
+
+**Indexes**:
+- `processingMonth` (ascending) - Single-field index
+- `roleGroup` (ascending) + `processingMonth` (ascending) - Composite index
+
+### File Storage
+
+XLSX files are stored in Firebase Cloud Storage at path: `carrier-statements/{processingMonth}/{carrier}/{filename}`
+
+Files are referenced via `fileUrl` in the `carrierStatements` collection. Download URLs are generated using Firebase Storage SDK.
+
+### Service Layer
+
+**Mutations** (see `services/firebaseMutations.ts`):
+- `uploadCarrierStatement()` - Upload file to Storage, store metadata in Firestore (handles duplicates)
+- `storeMatches()` - Store matches in batches
+- `regenerateSellerStatements()` - Generate and store seller statements from all matches
+- `deleteCarrierStatement()` - Delete statement, matches, file, and regenerate seller statements
+
+**Queries** (see `services/firebaseQueries.ts`):
+- `getCarrierStatements()` - Get all statements (optionally filtered by processing month)
+- `getCarrierStatementById()` - Get single statement
+- `getSellerStatements()` - Get seller statements for a processing month
+- `getFileUrl()` - Get download URL from Storage path or URL
+
+**React Hooks** (see `services/firebaseHooks.ts`):
+- `useCarrierStatements()` - Real-time hook for carrier statements
+- `useSellerStatements()` - Real-time hook for seller statements
+- `useProcessingMonths()` - Derive processing months from carrier statements
+- `useCarrierStatementById()` - Real-time hook for single statement
+
 ## Future Database Schema (If Migrating to Supabase)
 
 ### Tables Needed

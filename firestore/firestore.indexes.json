@@ -1,0 +1,102 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "carrierStatements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "carrier",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processingMonth",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "carrierStatements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "processingMonth",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "uploadedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "sellerStatements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "roleGroup",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processingMonth",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "sellerStatements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "processingMonth",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "roleGroup",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "matches",
+      "fieldPath": "carrierStatementId",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "matches",
+      "fieldPath": "processingMonth",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "carrierStatements",
+      "fieldPath": "processingMonth",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "sellerStatements",
+      "fieldPath": "processingMonth",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    }
+  ]
+}

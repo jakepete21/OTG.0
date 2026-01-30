@@ -1,0 +1,19 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Carrier Statements - allow read/write for now (update for production with auth)
+    match /carrierStatements/{document=**} {
+      allow read, write: if true;
+    }
+    
+    // Matches - allow read/write for now (update for production with auth)
+    match /matches/{document=**} {
+      allow read, write: if true;
+    }
+    
+    // Seller Statements - allow read/write for now (update for production with auth)
+    match /sellerStatements/{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
