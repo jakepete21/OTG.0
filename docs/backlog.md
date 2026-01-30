@@ -56,48 +56,54 @@ Acceptance:
 - Migrate from Convex to Firebase Backend (2026-01-28) - Successfully migrated to Firebase Firestore + Cloud Storage, removed all Convex code
 - Fix Firebase Setup and Verify Backend Works (2026-01-28) - Installed Firebase dependencies, verified configuration, tested upload/delete operations
 - Clean Up Master Data CSV and Import to Firebase (2026-01-28) - Added CSV analysis and cleaning services using Gemini, created Master Data 2 tab with all 62 columns, implemented CSV reformatting script
+- Switch Statement Processing to Use Master Data 2 (2026-01-30) - Updated App.tsx and Dashboard.tsx to use masterData2, implemented Master Data 2 persistence in Firebase, added optimistic UI updates for deletions, optimized duplicate detection and seller statement updates
 
 ### 🔄 In Progress
-- Switch Statement Processing to Use Master Data 2
 
 ### 📋 Backlog
 
-#### Ticket: Switch Statement Processing to Use Master Data 2
+#### ✅ Ticket: Switch Statement Processing to Use Master Data 2 (COMPLETED)
 **Goal**: Update all statement processing automations to use Master Data 2 instead of Master Data
 
-**Problem**: 
-- Currently statement upload and processing uses `masterData` (Master Data tab)
-- Master Data 2 has the complete reformatted CSV with all 62 columns
-- User wants automations to use Master Data 2 for better data completeness
+**Completed Changes**:
 
-**Current State**:
-- `App.tsx` has both `masterData` and `masterData2` state
-- `Dashboard` component receives `masterData` prop
-- All statement processing services use `masterData` parameter:
-  - `processCarrierStatement()` - carrier statement processing
-  - `analyzeStatement()` - vendor statement analysis
-  - `matchCarrierStatements()` - matching against master data
-  - `detectAllDisputes()` - dispute detection
-  - `extractCarrierStatementData()` - state lookup from master data
-  - `getStateForBillingItem()` - state lookup
+1. **Updated App.tsx**:
+   - Changed `Dashboard` to receive `masterData2` instead of `masterData`
+   - Master Data 2 now loaded from Firebase via `useMasterData2()` hook
 
-**Changes Needed**:
+2. **Updated Dashboard Component**:
+   - Updated to use `masterData2` prop
+   - Updated validation messages to reference "Master Data 2"
+   - Added duplicate detection before processing (skips expensive operations)
+   - Improved batch upload handling with progress indicators
 
-1. **Update App.tsx**:
-   - Change `Dashboard` to receive `masterData2` instead of `masterData`
-   - Update prop name if needed for clarity
+3. **Master Data 2 Persistence**:
+   - Implemented Firebase persistence (individual documents per record)
+   - Added `saveMasterData2`, `updateMasterData2Record`, `deleteMasterData2Record` functions
+   - Updated Firestore security rules and indexes
+   - Fixed document size limits by using collection instead of single document
 
-2. **Update Dashboard Component**:
-   - Change prop from `masterData` to `masterData2` (or keep name but use masterData2)
-   - Update all references to use `masterData2`
-   - Update validation messages to reference "Master Data 2"
+4. **Optimized Deletion Flow**:
+   - Added optimistic UI updates for instant carrier statement removal
+   - Implemented direct seller statement updates (removes items instead of regenerating)
+   - Added batched updates for multiple deletions
+   - Fixed duplicate key warnings in Reports component
 
-3. **Update Service Functions** (no changes needed - they accept parameter):
-   - Services already accept `masterData` as parameter - just pass `masterData2` instead
-   - No code changes needed in services themselves
+5. **Performance Improvements**:
+   - Duplicate detection now skips processing entirely
+   - Seller statement updates use direct item removal (much faster than regeneration)
+   - Added delays between batch operations to prevent write stream exhaustion
 
-**Files to Update**:
-- `App.tsx` - Pass `masterData2` to Dashboard instead of `masterData`
+**Files Updated**:
+- `App.tsx` - Now passes `masterData2` to Dashboard
+- `components/Dashboard.tsx` - Uses masterData2, added duplicate detection
+- `components/MasterDataList2.tsx` - Firebase persistence, loading states
+- `components/Reports.tsx` - Optimistic updates, direct seller statement updates
+- `services/firebaseMutations.ts` - Master Data 2 CRUD, optimized deletion
+- `services/firebaseHooks.ts` - Master Data 2 hooks
+- `services/firebaseQueries.ts` - Master Data 2 queries
+- `firestore/firestore.rules` - Added masterData2 collection rules
+- `firestore/firestore.indexes.json` - Added masterData2 indexes
 - `components/Dashboard.tsx` - Update prop and references to use Master Data 2
 - Update any validation messages to say "Master Data 2" instead of "Master Data"
 

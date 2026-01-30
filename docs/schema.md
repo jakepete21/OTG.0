@@ -252,6 +252,19 @@ Stores processed seller statements grouped by role group.
 - `processingMonth` (ascending) - Single-field index
 - `roleGroup` (ascending) + `processingMonth` (ascending) - Composite index
 
+#### `masterData2`
+Stores Master Data 2 records (reformatted CSV with all 62 columns). Each record is stored as an individual document.
+
+**Fields**:
+- `id` (string) - Auto-generated document ID
+- All fields from the reformatted CSV (62 columns total)
+- `updatedAt` (Timestamp) - Timestamp when last updated
+
+**Indexes**:
+- `updatedAt` (descending) - Single-field index for ordering records
+
+**Note**: Master Data 2 is stored as individual documents (one per record) to avoid Firestore's 1MB document size limit. This allows for efficient querying and updates of individual records.
+
 ### File Storage
 
 XLSX files are stored in Firebase Cloud Storage at path: `carrier-statements/{processingMonth}/{carrier}/{filename}`
@@ -264,12 +277,18 @@ Files are referenced via `fileUrl` in the `carrierStatements` collection. Downlo
 - `uploadCarrierStatement()` - Upload file to Storage, store metadata in Firestore (handles duplicates)
 - `storeMatches()` - Store matches in batches
 - `regenerateSellerStatements()` - Generate and store seller statements from all matches
-- `deleteCarrierStatement()` - Delete statement, matches, file, and regenerate seller statements
+- `removeItemsFromSellerStatements()` - Update seller statements by removing items directly (faster than regenerating)
+- `deleteCarrierStatement()` - Delete statement, matches, file, and update seller statements
+- `saveMasterData2()` - Save Master Data 2 records (batched writes)
+- `updateMasterData2Record()` - Update a single Master Data 2 record
+- `deleteMasterData2Record()` - Delete a single Master Data 2 record
 
 **Queries** (see `services/firebaseQueries.ts`):
 - `getCarrierStatements()` - Get all statements (optionally filtered by processing month)
 - `getCarrierStatementById()` - Get single statement
 - `getSellerStatements()` - Get seller statements for a processing month
+- `getMatchesForCarrierStatement()` - Get all matches for a specific carrier statement
+- `getMasterData2()` - Get all Master Data 2 records
 - `getFileUrl()` - Get download URL from Storage path or URL
 
 **React Hooks** (see `services/firebaseHooks.ts`):
