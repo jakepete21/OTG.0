@@ -55,6 +55,84 @@ Acceptance:
 - Rebuild and Simplify Convex Backend (2026-01-26) - Simplified backend to core functionality: upload, delete, process seller statements
 - Migrate from Convex to Firebase Backend (2026-01-28) - Successfully migrated to Firebase Firestore + Cloud Storage, removed all Convex code
 - Fix Firebase Setup and Verify Backend Works (2026-01-28) - Installed Firebase dependencies, verified configuration, tested upload/delete operations
+- Clean Up Master Data CSV and Import to Firebase (2026-01-28) - Added CSV analysis and cleaning services using Gemini, created Master Data 2 tab with all 62 columns, implemented CSV reformatting script
+
+### 🔄 In Progress
+- Switch Statement Processing to Use Master Data 2
+
+### 📋 Backlog
+
+#### Ticket: Switch Statement Processing to Use Master Data 2
+**Goal**: Update all statement processing automations to use Master Data 2 instead of Master Data
+
+**Problem**: 
+- Currently statement upload and processing uses `masterData` (Master Data tab)
+- Master Data 2 has the complete reformatted CSV with all 62 columns
+- User wants automations to use Master Data 2 for better data completeness
+
+**Current State**:
+- `App.tsx` has both `masterData` and `masterData2` state
+- `Dashboard` component receives `masterData` prop
+- All statement processing services use `masterData` parameter:
+  - `processCarrierStatement()` - carrier statement processing
+  - `analyzeStatement()` - vendor statement analysis
+  - `matchCarrierStatements()` - matching against master data
+  - `detectAllDisputes()` - dispute detection
+  - `extractCarrierStatementData()` - state lookup from master data
+  - `getStateForBillingItem()` - state lookup
+
+**Changes Needed**:
+
+1. **Update App.tsx**:
+   - Change `Dashboard` to receive `masterData2` instead of `masterData`
+   - Update prop name if needed for clarity
+
+2. **Update Dashboard Component**:
+   - Change prop from `masterData` to `masterData2` (or keep name but use masterData2)
+   - Update all references to use `masterData2`
+   - Update validation messages to reference "Master Data 2"
+
+3. **Update Service Functions** (no changes needed - they accept parameter):
+   - Services already accept `masterData` as parameter - just pass `masterData2` instead
+   - No code changes needed in services themselves
+
+**Files to Update**:
+- `App.tsx` - Pass `masterData2` to Dashboard instead of `masterData`
+- `components/Dashboard.tsx` - Update prop and references to use Master Data 2
+- Update any validation messages to say "Master Data 2" instead of "Master Data"
+
+**Files That Don't Need Changes** (they accept parameter):
+- `services/carrierStatementPipeline.ts` - Already accepts `masterData` parameter
+- `services/matchingService.ts` - Already accepts `masterData` parameter
+- `services/disputeDetection.ts` - Already accepts `masterData` parameter
+- `services/carrierStatementProcessor.ts` - Already accepts `masterData` parameter
+- `services/stateLookup.ts` - Already accepts `masterData` parameter
+- `services/geminiService.ts` - Already accepts `masterData` parameter
+
+**DB**: None
+
+**UI**: Update Dashboard to use Master Data 2
+
+**Acceptance**:
+- [ ] Dashboard receives `masterData2` from App.tsx
+- [ ] Statement upload uses Master Data 2 for processing
+- [ ] Carrier statement processing uses Master Data 2 for matching
+- [ ] Vendor statement analysis uses Master Data 2 for matching
+- [ ] State lookup uses Master Data 2
+- [ ] Dispute detection uses Master Data 2
+- [ ] Validation messages reference "Master Data 2"
+- [ ] All automations work correctly with Master Data 2
+- [ ] No references to old `masterData` in statement processing flow
+
+**Dependencies**: None
+
+**Notes**: 
+- This is a simple prop/parameter change - services already accept masterData as parameter
+- Master Data 2 has all 62 columns vs Master Data which may have fewer
+- Ensure Master Data 2 is loaded before processing statements
+- Test that matching still works correctly with Master Data 2 structure
+
+---
 
 ### ✅ Completed Slices
 - Clean Up Master Data CSV and Import to Firebase (2026-01-28) - Added CSV analysis and cleaning services using Gemini, created Master Data 2 tab with all 62 columns, implemented CSV reformatting script

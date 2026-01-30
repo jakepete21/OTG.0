@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { AnalysisResult, CommissionStatement, CarrierStatementProcessingResult, SellerStatement } from '../types';
 import { Download, ChevronDown, ChevronUp, User, DollarSign, AlertTriangle, Calendar, CheckCircle, XCircle, Trash2, RefreshCw } from 'lucide-react';
 import { exportCommissionStatementPDF } from '../services/pdfExport';
-import { useProcessingMonths, useSellerStatements, useCarrierStatements, useDeleteCarrierStatement, useRegenerateSellerStatements } from '../services/firebaseHooks';
+import { useProcessingMonths, useSellerStatements, useCarrierStatements, useDeleteCarrierStatement, useRegenerateSellerStatements, useRemoveItemsFromSellerStatements } from '../services/firebaseHooks';
 import { CarrierType } from '../services/monthDetection';
+import { getMatchesForCarrierStatement } from '../services/firebaseQueries';
 
 interface ReportsProps {
   analysisResult: AnalysisResult | null;
@@ -27,6 +28,12 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
   const [deleteConfirmCarrier, setDeleteConfirmCarrier] = useState<string | null>(null);
   // Track statements that are being deleted (optimistic UI updates)
   const [pendingDeletions, setPendingDeletions] = useState<Set<string>>(new Set());
+  // Track optimistically filtered seller statements (for pending deletions)
+  const [optimisticSellerStatements, setOptimisticSellerStatements] = useState<{
+    monthKey: string;
+    statementId: string;
+    filteredStatements: SellerStatement[];
+  } | null>(null);
   
   // Firebase hooks
   const processingMonthsRaw = useProcessingMonths();
@@ -55,12 +62,33 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     // No months available yet
     return null;
   }, [selectedMonthKey, processingMonths]);
+
+  // Clear optimistic state when month changes
+  useEffect(() => {
+    if (optimisticSellerStatements && optimisticSellerStatements.monthKey !== selectedMonth) {
+      setOptimisticSellerStatements(null);
+    }
+  }, [selectedMonth, optimisticSellerStatements]);
   
   const sellerStatementsForMonth = useSellerStatements(selectedMonth);
   const carrierStatementsForMonth = useCarrierStatements(selectedMonth);
   const deleteCarrierStatement = useDeleteCarrierStatement();
   const regenerateSellerStatements = useRegenerateSellerStatements();
+  const removeItemsFromSellerStatements = useRemoveItemsFromSellerStatements();
   const [isRegenerating, setIsRegenerating] = useState(false);
+  // Track regeneration timeout to batch multiple deletions
+  const regenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Accumulate deleted matches for batched updates
+  const pendingDeletedMatchesRef = useRef<Array<{ processingMonth: string; matches: any[] }>>([]);
+  
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (regenerationTimeoutRef.current) {
+        clearTimeout(regenerationTimeoutRef.current);
+      }
+    };
+  }, []);
   
   /**
    * Manually regenerate seller statements for the selected month
@@ -107,35 +135,132 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
       return;
     }
     
-    // Optimistic UI update: immediately remove from display
+    // Optimistic UI update: immediately remove carrier statement from display
     setPendingDeletions(prev => new Set(prev).add(statementId));
     setDeletingStatementId(statementId);
     setDeleteConfirmCarrier(null);
+    
+    // Fetch matches for this statement to optimistically filter seller statements
+    let matchesToRemove: any[] = [];
+    try {
+      const matches = await getMatchesForCarrierStatement(statementId);
+      matchesToRemove = matches.map(m => m.matchedRow);
+      console.log(`[Reports] Found ${matchesToRemove.length} matches to remove optimistically`);
+    } catch (error: any) {
+      console.warn('[Reports] Could not fetch matches for optimistic update:', error);
+      // Continue with deletion even if we can't fetch matches
+    }
+
+    // Create a set of identifiers for items to remove from seller statements
+    // Match by otgCompBillingItem + accountName (key fields)
+    const itemsToRemove = new Set<string>();
+    matchesToRemove.forEach(match => {
+      if (match.otgCompBillingItem && match.accountName) {
+        const key = `${match.otgCompBillingItem}|${match.accountName}`;
+        itemsToRemove.add(key);
+      }
+    });
+
+    // Optimistically filter seller statements
+    if (itemsToRemove.size > 0 && sellerStatementsForMonth && sellerStatementsForMonth.length > 0) {
+      const filteredStatements = sellerStatementsForMonth.map(stmt => {
+        // Filter out items that match the deleted statement's matches
+        const filteredItems = stmt.items.filter(item => {
+          const key = `${item.otgCompBillingItem}|${item.accountName}`;
+          return !itemsToRemove.has(key);
+        });
+
+        // Recalculate totals
+        const totalOtgComp = filteredItems.reduce((sum, item) => sum + (item.otgComp || 0), 0);
+        const totalSellerComp = filteredItems.reduce((sum, item) => sum + (item.sellerComp || 0), 0);
+
+        return {
+          roleGroup: stmt.roleGroup,
+          items: filteredItems,
+          totalOtgComp,
+          totalSellerComp,
+        };
+      }).filter(stmt => stmt.items.length > 0); // Remove empty role groups
+
+      // Set optimistic seller statements
+      setOptimisticSellerStatements({
+        monthKey: processingMonth,
+        statementId,
+        filteredStatements,
+      });
+    }
     
     // Continue with backend deletion in background
     (async () => {
       try {
         console.log(`[Reports] Deleting carrier ${carrier} statement ${statementId} for month ${processingMonth}`);
         
-        // Delete the statement - function handles deleting matches
-        await deleteCarrierStatement(statementId);
-        console.log(`[Reports] Statement deleted successfully`);
+        // Delete the statement - function handles deleting matches and returns deleted matches
+        const result = await deleteCarrierStatement(statementId);
+        console.log(`[Reports] Statement deleted successfully, ${result.deletedMatchesCount} matches removed`);
         
-        // Regenerate seller statements from remaining matches
-        // Add a small delay to ensure deletion is committed
-        await new Promise(resolve => setTimeout(resolve, 500));
-        await regenerateSellerStatements(processingMonth);
-        console.log(`[Reports] Seller statements regenerated after deletion`);
+        // Clear this statement from pending deletions immediately (deletion succeeded)
+        setPendingDeletions(prev => {
+          const next = new Set(prev);
+          next.delete(statementId);
+          return next;
+        });
         
-        // Remove from pending deletions once backend deletion completes
-        // Firebase hooks will automatically update when data changes
-        setTimeout(() => {
-          setPendingDeletions(prev => {
-            const next = new Set(prev);
-            next.delete(statementId);
-            return next;
-          });
-        }, 1000); // Give Firebase time to sync
+        // Clear optimistic seller statements for this specific deletion
+        // (Firebase hooks will update with real data)
+        if (optimisticSellerStatements?.statementId === statementId) {
+          setOptimisticSellerStatements(null);
+        }
+        
+        // Update seller statements directly by removing items (much faster than regenerating)
+        // Accumulate deleted matches for batched update
+        if (result.deletedMatches && result.deletedMatches.length > 0) {
+          // Add to pending updates
+          const existing = pendingDeletedMatchesRef.current.find(p => p.processingMonth === processingMonth);
+          if (existing) {
+            existing.matches.push(...result.deletedMatches);
+          } else {
+            pendingDeletedMatchesRef.current.push({
+              processingMonth,
+              matches: [...result.deletedMatches],
+            });
+          }
+        }
+        
+        // Debounce: if multiple deletions happen quickly, batch the updates
+        // Clear any existing timeout
+        if (regenerationTimeoutRef.current) {
+          clearTimeout(regenerationTimeoutRef.current);
+        }
+        
+        // Set a new timeout to update seller statements after a short delay
+        // This batches multiple deletions into a single update
+        regenerationTimeoutRef.current = setTimeout(async () => {
+          try {
+            // Process all pending updates
+            const updatesToProcess = [...pendingDeletedMatchesRef.current];
+            pendingDeletedMatchesRef.current = [];
+            
+            for (const update of updatesToProcess) {
+              console.log(`[Reports] Updating seller statements for ${update.processingMonth} (removing ${update.matches.length} items directly)`);
+              // Add a small delay to ensure all deletions are committed
+              await new Promise(resolve => setTimeout(resolve, 200));
+              await removeItemsFromSellerStatements(update.processingMonth, update.matches);
+              console.log(`[Reports] Seller statements updated (items removed directly)`);
+            }
+          } catch (error: any) {
+            console.error('[Reports] Error updating seller statements:', error);
+            // Fallback to regeneration if direct update fails
+            console.log('[Reports] Falling back to full regeneration...');
+            const monthsToRegenerate = [...new Set(pendingDeletedMatchesRef.current.map(p => p.processingMonth))];
+            for (const month of monthsToRegenerate) {
+              await regenerateSellerStatements(month);
+            }
+            pendingDeletedMatchesRef.current = [];
+          }
+          regenerationTimeoutRef.current = null;
+        }, 500); // Wait 500ms for potential additional deletions
+        
       } catch (error: any) {
         console.error('[Reports] Error deleting statement:', error);
         
@@ -145,6 +270,9 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
           next.delete(statementId);
           return next;
         });
+        if (optimisticSellerStatements?.statementId === statementId) {
+          setOptimisticSellerStatements(null);
+        }
         
         alert(`Failed to delete statement: ${error.message}\n\nThe statement has been restored in the UI.`);
       } finally {
@@ -179,21 +307,48 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
   }, [analysisResult]);
 
   // Get seller statements from Firebase or fallback to local result
+  // Apply optimistic filtering for pending deletions
+  // Deduplicate statements with the same roleGroup (merge items and totals)
   const sellerStatements: SellerStatement[] = useMemo(() => {
+    let statements: SellerStatement[] = [];
+    
     if (sellerStatementsForMonth && sellerStatementsForMonth.length > 0) {
-      return sellerStatementsForMonth.map(stmt => ({
+      statements = sellerStatementsForMonth.map(stmt => ({
         roleGroup: stmt.roleGroup,
         items: stmt.items,
         totalOtgComp: stmt.totalOtgComp,
         totalSellerComp: stmt.totalSellerComp,
       }));
+    } else if (carrierStatementResult) {
+      // Fallback to local result if Firebase data not available
+      statements = carrierStatementResult.sellerStatements;
     }
-    // Fallback to local result if Firebase data not available
-    if (!carrierStatementResult) {
-      return [];
+
+    // Apply optimistic filtering if we have a pending deletion for this month
+    if (optimisticSellerStatements && optimisticSellerStatements.monthKey === selectedMonth) {
+      statements = optimisticSellerStatements.filteredStatements;
     }
-    return carrierStatementResult.sellerStatements;
-  }, [selectedMonth, sellerStatementsForMonth, carrierStatementResult]);
+
+    // Deduplicate statements with the same roleGroup by merging them
+    const deduplicated = new Map<string, SellerStatement>();
+    statements.forEach(stmt => {
+      const existing = deduplicated.get(stmt.roleGroup);
+      if (existing) {
+        // Merge: combine items and recalculate totals
+        const mergedItems = [...existing.items, ...stmt.items];
+        deduplicated.set(stmt.roleGroup, {
+          roleGroup: stmt.roleGroup,
+          items: mergedItems,
+          totalOtgComp: existing.totalOtgComp + stmt.totalOtgComp,
+          totalSellerComp: existing.totalSellerComp + stmt.totalSellerComp,
+        });
+      } else {
+        deduplicated.set(stmt.roleGroup, stmt);
+      }
+    });
+
+    return Array.from(deduplicated.values());
+  }, [selectedMonth, sellerStatementsForMonth, carrierStatementResult, optimisticSellerStatements]);
 
   // Get current month data
   const currentMonthData = useMemo(() => {
@@ -449,8 +604,8 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-6">
-              {sellerStatements.map((stmt) => (
-                <div key={stmt.roleGroup} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden transition-all">
+              {sellerStatements.map((stmt, idx) => (
+                <div key={`${stmt.roleGroup}-${idx}`} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden transition-all">
                   <div 
                     className="p-6 cursor-pointer hover:bg-slate-50 flex items-center justify-between"
                     onClick={() => toggleRoleGroup(stmt.roleGroup)}

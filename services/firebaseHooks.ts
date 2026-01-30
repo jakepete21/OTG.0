@@ -20,11 +20,16 @@ import {
   storeMatches,
   regenerateSellerStatements,
   deleteCarrierStatement,
+  removeItemsFromSellerStatements,
+  saveMasterData2,
+  updateMasterData2Record,
+  deleteMasterData2Record,
 } from './firebaseMutations';
 import type {
   CarrierStatementDoc,
   SellerStatementDoc,
 } from './firebaseQueries';
+import { getMasterData2 } from './firebaseQueries';
 
 /**
  * Hook to get all carrier statements with real-time updates
@@ -310,6 +315,93 @@ export const useRegenerateSellerStatements = () => {
  */
 export const useDeleteCarrierStatement = () => {
   return deleteCarrierStatement;
+};
+
+/**
+ * Hook to remove items from seller statements (faster than regenerating)
+ */
+export const useRemoveItemsFromSellerStatements = () => {
+  return removeItemsFromSellerStatements;
+};
+
+/**
+ * Hook to get Master Data 2 with real-time updates
+ * Listens to the entire masterData2 collection
+ */
+export const useMasterData2 = (): any[] => {
+  const [records, setRecords] = useState<any[]>([]);
+
+  useEffect(() => {
+    const masterData2Collection = collection(db, 'masterData2');
+    // Query without orderBy initially - index may not be built yet
+    // If index is needed, Firestore will prompt to create it
+    const q = query(masterData2Collection);
+    
+    let isMounted = true;
+    
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (!isMounted) return;
+        
+        try {
+          const docs = snapshot.docs.map((docSnapshot) => ({
+            id: docSnapshot.id,
+            ...docSnapshot.data(),
+          }));
+          setRecords(docs);
+        } catch (error: any) {
+          console.error('[useMasterData2] Error processing snapshot:', error);
+          if (isMounted) {
+            setRecords([]);
+          }
+        }
+      },
+      (error) => {
+        console.error('[useMasterData2] Error fetching master data 2:', error);
+        // If collection doesn't exist or permission denied, that's OK - return empty array
+        if (error.code === 'not-found' || error.code === 'permission-denied') {
+          if (isMounted) {
+            setRecords([]);
+          }
+        } else {
+          // For other errors, try to continue with empty array
+          console.warn('[useMasterData2] Continuing with empty array due to error');
+          if (isMounted) {
+            setRecords([]);
+          }
+        }
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  return records;
+};
+
+/**
+ * Hook to save Master Data 2
+ */
+export const useSaveMasterData2 = () => {
+  return saveMasterData2;
+};
+
+/**
+ * Hook to update a Master Data 2 record
+ */
+export const useUpdateMasterData2Record = () => {
+  return updateMasterData2Record;
+};
+
+/**
+ * Hook to delete a Master Data 2 record
+ */
+export const useDeleteMasterData2Record = () => {
+  return deleteMasterData2Record;
 };
 
 /**

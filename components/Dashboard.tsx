@@ -40,6 +40,8 @@ const Dashboard: React.FC<DashboardProps> = ({
     detection?: ReturnType<typeof detectCarrierAndMonth>;
   }>>([]);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [storeProgress, setStoreProgress] = useState<{ current: number; total: number } | null>(null);
+  const [regenerateProgress, setRegenerateProgress] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Firebase hooks
@@ -89,7 +91,7 @@ const Dashboard: React.FC<DashboardProps> = ({
    */
   const processBatchFiles = async (files: File[]) => {
     if (masterData.length === 0) {
-      setErrorMsg("Master Data is empty. Please add services in the Master Data tab before processing.");
+      setErrorMsg("Master Data 2 is empty. Please load Master Data 2 before processing.");
       return;
     }
 
@@ -181,10 +183,12 @@ const Dashboard: React.FC<DashboardProps> = ({
     // Regenerate seller statements for each processing month that had files uploaded
     // This ensures all carriers are combined
     console.log(`[processBatchFiles] Regenerating seller statements for ${processingMonthsToRegenerate.size} processing month(s)`);
+    setRegenerateProgress('Regenerating seller statements...');
     for (const processingMonth of processingMonthsToRegenerate) {
       console.log(`[processBatchFiles] Regenerating for month: ${processingMonth}`);
       await regenerateSellerStatementsForMonth(processingMonth);
     }
+    setRegenerateProgress(null);
 
     setIsBatchProcessing(false);
     
@@ -198,6 +202,31 @@ const Dashboard: React.FC<DashboardProps> = ({
         `Batch upload complete: ${successCount} successful, ${duplicateCount} duplicates skipped, ${errorCount} errors`
       );
     }
+  };
+
+  /**
+   * Check if a carrier statement already exists (duplicate check)
+   */
+  const checkForDuplicate = async (
+    carrier: string,
+    processingMonth: string
+  ): Promise<{ exists: boolean; statementId?: string }> => {
+    const { collection, query, where, getDocs } = await import('firebase/firestore');
+    const { db } = await import('../services/firebaseClient');
+    
+    const statementsRef = collection(db, 'carrierStatements');
+    const duplicateQuery = query(
+      statementsRef,
+      where('carrier', '==', carrier),
+      where('processingMonth', '==', processingMonth)
+    );
+    const duplicateSnapshot = await getDocs(duplicateQuery);
+    const existing = duplicateSnapshot.docs[0];
+    
+    return {
+      exists: !!existing,
+      statementId: existing?.id,
+    };
   };
 
   /**
@@ -218,7 +247,24 @@ const Dashboard: React.FC<DashboardProps> = ({
     const statementMonthKey = getMonthKey(detection.statementMonth!);
 
     try {
-      // Process carrier statement first
+      // Check for duplicate BEFORE processing
+      const duplicateCheck = await checkForDuplicate(detection.carrier!, processingMonthKey);
+      
+      if (duplicateCheck.exists) {
+        // Duplicate detected - skip entirely (no processing, no file upload, no deletion)
+        console.log(`[processSingleCarrierFile] Duplicate detected for ${detection.carrier} - ${processingMonthKey}, skipping entirely`);
+        
+        results[index] = {
+          fileName: file.name,
+          status: 'duplicate',
+          message: `Duplicate detected - already processed, skipping`,
+          detection,
+        };
+        setBatchUploadResults([...results]);
+        return;
+      }
+      
+      // No duplicate - process the file
       const result = await processCarrierStatement(file, masterData);
       
       // Upload file and metadata to Firebase (handles file upload internally)
@@ -233,31 +279,27 @@ const Dashboard: React.FC<DashboardProps> = ({
       if (uploadStatementResult.statementId) {
         // Store matched rows (storeMatches handles batching internally)
         console.log(`[processSingleCarrierFile] Storing ${result.matchedRows.length} matched rows for ${detection.carrier}`);
+        const totalBatches = Math.ceil(result.matchedRows.length / 450);
+        setStoreProgress({ current: 0, total: totalBatches });
         await storeMatches(
           processingMonthKey,
           uploadStatementResult.statementId,
-          result.matchedRows
+          result.matchedRows,
+          (current, total) => {
+            setStoreProgress({ current, total });
+          }
         );
+        setStoreProgress(null);
         
         // Note: Seller statement regeneration happens after ALL files in batch are processed
         // This ensures all carriers are combined. See processBatchFiles for the regeneration call.
         
-        // Set result status
-        if (uploadStatementResult.isReplacement) {
-          results[index] = {
-            fileName: file.name,
-            status: 'duplicate',
-            message: `Duplicate detected - replaced existing statement`,
-            detection,
-          };
-        } else {
-          results[index] = {
-            fileName: file.name,
-            status: 'success',
-            message: `Successfully uploaded and processed`,
-            detection,
-          };
-        }
+        results[index] = {
+          fileName: file.name,
+          status: 'success',
+          message: `Successfully uploaded and processed`,
+          detection,
+        };
         setBatchUploadResults([...results]);
         return;
       }
@@ -290,7 +332,7 @@ const Dashboard: React.FC<DashboardProps> = ({
 
     try {
       if (masterData.length === 0) {
-        throw new Error("Master Data is empty. Please add services in the Master Data tab before processing.");
+        throw new Error("Master Data 2 is empty. Please load Master Data 2 before processing.");
       }
 
       // Detect if this is a carrier statement (XLSX file)
@@ -319,7 +361,27 @@ const Dashboard: React.FC<DashboardProps> = ({
           const processingMonthKey = getMonthKey(detection.processingMonth);
           const statementMonthKey = getMonthKey(detection.statementMonth!);
           
-          // Process carrier statement first
+          // Check for duplicate BEFORE processing
+          const duplicateCheck = await checkForDuplicate(detection.carrier, processingMonthKey);
+          
+          if (duplicateCheck.exists) {
+            // Duplicate detected - skip entirely (no processing, no file upload, no deletion)
+            console.log(`[processFile] Duplicate detected for ${detection.carrier} - ${processingMonthKey}, skipping entirely`);
+            
+            // Show duplicate warning
+            setDuplicateWarning({
+              exists: true,
+              filename: file.name,
+            });
+            
+            // Set error message
+            setErrorMsg(`Duplicate detected: A statement for ${detection.carrier} (${detection.processingMonthLabel}) already exists. Skipping upload.`);
+            
+            setIsProcessing(false);
+            return;
+          }
+          
+          // No duplicate - process the file
           const result = await processCarrierStatement(file, masterData);
           
           // Upload file and metadata to Firebase (handles file upload internally)
@@ -336,28 +398,27 @@ const Dashboard: React.FC<DashboardProps> = ({
             storageId: uploadResult.fileUrl,
           });
           
-          // Show warning if this was a replacement
-          if (uploadResult.isReplacement) {
-            setDuplicateWarning({
-              exists: true,
-              filename: file.name,
-            });
-          }
-          
           // Process statement: store matches and regenerate seller statements from ALL carriers
           if (uploadResult.statementId) {
             // Store matched rows (storeMatches handles batching internally)
             console.log(`[processFile] Storing ${result.matchedRows.length} matched rows for ${detection.carrier}`);
+            setStoreProgress({ current: 0, total: Math.ceil(result.matchedRows.length / 450) });
             await storeMatches(
               processingMonthKey,
               uploadResult.statementId,
-              result.matchedRows
+              result.matchedRows,
+              (current, total) => {
+                setStoreProgress({ current, total });
+              }
             );
+            setStoreProgress(null);
             
             // Regenerate seller statements from ALL matches for this processing month
+            setRegenerateProgress('Regenerating seller statements...');
             // Add a small delay to ensure all matches are stored before regenerating
             await new Promise(resolve => setTimeout(resolve, 500));
             await regenerateSellerStatementsForMonth(processingMonthKey);
+            setRegenerateProgress(null);
           }
           
           // Set result for display
@@ -542,6 +603,29 @@ const Dashboard: React.FC<DashboardProps> = ({
                   ? 'Extracting data, matching records, detecting disputes, and generating seller statements.'
                   : 'Gemini is extracting data and matching records.'}
             </p>
+            
+            {/* Progress Indicators */}
+            {storeProgress && (
+              <div className="mt-4 w-full max-w-md">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-slate-700">Storing matches</span>
+                  <span className="text-sm text-slate-500">{storeProgress.current}/{storeProgress.total} batches</span>
+                </div>
+                <div className="w-full bg-slate-200 rounded-full h-2.5">
+                  <div 
+                    className="bg-indigo-600 h-2.5 rounded-full transition-all duration-300"
+                    style={{ width: `${(storeProgress.current / storeProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            
+            {regenerateProgress && (
+              <div className="mt-4 flex items-center gap-2">
+                <Loader2 className="animate-spin text-indigo-600" size={16} />
+                <span className="text-sm text-slate-600">{regenerateProgress}</span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-6 cursor-pointer" onClick={() => fileInputRef.current?.click()}>

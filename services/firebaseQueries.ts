@@ -110,6 +110,25 @@ export async function getFileUrl(storagePathOrUrl: string): Promise<string> {
 }
 
 /**
+ * Get matches for a carrier statement
+ */
+export async function getMatchesForCarrierStatement(
+  statementId: string
+): Promise<MatchDoc[]> {
+  const matchesRef = collection(db, 'matches');
+  const q = query(
+    matchesRef,
+    where('carrierStatementId', '==', statementId)
+  );
+
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+  })) as MatchDoc[];
+}
+
+/**
  * Get a single carrier statement by ID
  * Note: This function is not efficient for Firestore - use getDoc instead
  * Keeping for compatibility but consider using getDoc directly in hooks
@@ -129,4 +148,18 @@ export async function getCarrierStatementById(
     id: statementDoc.id,
     ...statementDoc.data(),
   } as CarrierStatementDoc;
+}
+
+/**
+ * Get Master Data 2 from Firebase
+ * Returns all records from the masterData2 collection
+ */
+export async function getMasterData2(): Promise<any[]> {
+  const masterData2Collection = collection(db, 'masterData2');
+  const snapshot = await getDocs(masterData2Collection);
+  
+  return snapshot.docs.map((docSnapshot) => ({
+    id: docSnapshot.id,
+    ...docSnapshot.data(),
+  }));
 }

@@ -21,29 +21,116 @@ import { generateSellerStatements } from './sellerStatements';
 import { MatchedRow } from '../types';
 
 /**
- * Remove undefined values from an object recursively
- * Firestore doesn't allow undefined values - they must be null or omitted
+ * Remove undefined values and clean data for Firestore compatibility
+ * Firestore doesn't allow undefined values, functions, or certain types
  */
 function removeUndefinedValues<T>(obj: T): T {
   if (obj === null || obj === undefined) {
     return obj;
   }
   
-  if (Array.isArray(obj)) {
-    return obj.map(removeUndefinedValues) as T;
+  // Handle functions - convert to null (Firestore doesn't support functions)
+  if (typeof obj === 'function') {
+    return null as T;
   }
   
+  // Handle Date objects - convert to ISO string
+  if (obj instanceof Date) {
+    return obj.toISOString() as T;
+  }
+  
+  // Handle arrays
+  if (Array.isArray(obj)) {
+    return obj.map(removeUndefinedValues).filter(item => item !== null && item !== undefined) as T;
+  }
+  
+  // Handle objects
   if (typeof obj === 'object') {
     const cleaned: any = {};
     for (const [key, value] of Object.entries(obj)) {
-      if (value !== undefined) {
-        cleaned[key] = removeUndefinedValues(value);
+      // Skip undefined values
+      if (value === undefined) {
+        continue;
       }
+      
+      // Skip functions
+      if (typeof value === 'function') {
+        continue;
+      }
+      
+      // Recursively clean nested objects
+      cleaned[key] = removeUndefinedValues(value);
     }
     return cleaned as T;
   }
   
+  // Return primitive values as-is
   return obj;
+}
+
+/**
+ * Clean and validate data for Firestore
+ * Ensures data is serializable and within size limits
+ */
+function cleanForFirestore(records: any[]): any[] {
+  return records.map(record => {
+    const cleaned: any = {};
+    
+    for (const [key, value] of Object.entries(record)) {
+      // Skip undefined
+      if (value === undefined) {
+        continue;
+      }
+      
+      // Skip functions
+      if (typeof value === 'function') {
+        continue;
+      }
+      
+      // Convert Date to string
+      if (value instanceof Date) {
+        cleaned[key] = value.toISOString();
+        continue;
+      }
+      
+      // Convert null to empty string for strings, or keep null for other types
+      if (value === null) {
+        cleaned[key] = '';
+        continue;
+      }
+      
+      // Handle arrays
+      if (Array.isArray(value)) {
+        cleaned[key] = value.map(item => {
+          if (typeof item === 'function' || item === undefined) return '';
+          if (item instanceof Date) return item.toISOString();
+          return item;
+        });
+        continue;
+      }
+      
+      // Handle objects
+      if (typeof value === 'object') {
+        const nestedCleaned: any = {};
+        for (const [nestedKey, nestedValue] of Object.entries(value)) {
+          if (nestedValue !== undefined && typeof nestedValue !== 'function') {
+            if (nestedValue instanceof Date) {
+              nestedCleaned[nestedKey] = nestedValue.toISOString();
+            } else {
+              nestedCleaned[nestedKey] = nestedValue;
+            }
+          }
+        }
+        cleaned[key] = nestedCleaned;
+        continue;
+      }
+      
+      // Primitive values
+      cleaned[key] = value;
+    }
+    
+    return cleaned;
+  });
 }
 
 /**
@@ -101,7 +188,7 @@ export async function uploadCarrierStatement(
       { merge: true }
     );
 
-    // Delete old matches for this statement
+    // Delete old matches for this statement in batches (to avoid transaction size limit)
     const matchesRef = collection(db, 'matches');
     const matchesQuery = query(
       matchesRef,
@@ -109,11 +196,27 @@ export async function uploadCarrierStatement(
     );
     const matchesSnapshot = await getDocs(matchesQuery);
     
-    const batch = writeBatch(db);
-    matchesSnapshot.docs.forEach((matchDoc) => {
-      batch.delete(matchDoc.ref);
-    });
-    await batch.commit();
+    // Delete in batches of 450 (Firestore limit is 500)
+    // Add delays between batches to prevent "Write stream exhausted" errors
+    const DELETE_BATCH_SIZE = 450;
+    const matchDocs = matchesSnapshot.docs;
+    const totalBatches = Math.ceil(matchDocs.length / DELETE_BATCH_SIZE);
+    
+    for (let i = 0; i < matchDocs.length; i += DELETE_BATCH_SIZE) {
+      const chunk = matchDocs.slice(i, i + DELETE_BATCH_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((matchDoc) => {
+        batch.delete(matchDoc.ref);
+      });
+      await batch.commit();
+      const currentBatch = Math.floor(i / DELETE_BATCH_SIZE) + 1;
+      console.log(`[uploadCarrierStatement] Deleted ${chunk.length} old matches (batch ${currentBatch}/${totalBatches})`);
+      
+      // Add delay between batches to prevent write stream exhaustion (except for the last batch)
+      if (currentBatch < totalBatches) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
 
     // Delete old file from storage if path is different
     const oldData = existing.data();
@@ -165,7 +268,8 @@ export async function uploadCarrierStatement(
 export async function storeMatches(
   processingMonth: string,
   carrierStatementId: string,
-  matchedRowsBatch: MatchedRow[]
+  matchedRowsBatch: MatchedRow[],
+  onProgress?: (current: number, total: number) => void
 ): Promise<{ success: boolean; count: number }> {
   const matchesRef = collection(db, 'matches');
   const createdAt = Timestamp.now();
@@ -175,10 +279,13 @@ export async function storeMatches(
   const BATCH_SIZE = 450;
   let totalStored = 0;
 
+  const totalBatches = Math.ceil(matchedRowsBatch.length / BATCH_SIZE);
+
   // Process in chunks to avoid "Transaction too big" error
   for (let i = 0; i < matchedRowsBatch.length; i += BATCH_SIZE) {
     const chunk = matchedRowsBatch.slice(i, i + BATCH_SIZE);
     const batch = writeBatch(db);
+    const currentBatch = Math.floor(i / BATCH_SIZE) + 1;
 
     chunk.forEach((matchedRow) => {
       const matchDocRef = doc(matchesRef);
@@ -195,13 +302,105 @@ export async function storeMatches(
     await batch.commit();
     totalStored += chunk.length;
     
+    // Report progress
+    if (onProgress) {
+      onProgress(currentBatch, totalBatches);
+    }
+    
     // Log progress for large batches
     if (matchedRowsBatch.length > BATCH_SIZE) {
-      console.log(`[storeMatches] Stored batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(matchedRowsBatch.length / BATCH_SIZE)} (${chunk.length} matches)`);
+      console.log(`[storeMatches] Stored batch ${currentBatch}/${totalBatches} (${chunk.length} matches)`);
     }
   }
 
   return { success: true, count: totalStored };
+}
+
+/**
+ * Update seller statements by removing items from deleted matches
+ * Much faster than regenerating - just removes items and recalculates totals
+ */
+export async function removeItemsFromSellerStatements(
+  processingMonth: string,
+  deletedMatches: MatchedRow[]
+): Promise<{ success: boolean; updatedGroups: number; removedItemsCount: number }> {
+  if (deletedMatches.length === 0) {
+    return { success: true, updatedGroups: 0, removedItemsCount: 0 };
+  }
+
+  // Create a set of identifiers for items to remove
+  // Match by otgCompBillingItem + accountName (key fields)
+  const itemsToRemove = new Set<string>();
+  deletedMatches.forEach(match => {
+    if (match.otgCompBillingItem && match.accountName) {
+      const key = `${match.otgCompBillingItem}|${match.accountName}`;
+      itemsToRemove.add(key);
+    }
+  });
+
+  if (itemsToRemove.size === 0) {
+    return { success: true, updatedGroups: 0, removedItemsCount: 0 };
+  }
+
+  // Get all seller statements for this processing month
+  const sellerStatementsRef = collection(db, 'sellerStatements');
+  const sellerQuery = query(
+    sellerStatementsRef,
+    where('processingMonth', '==', processingMonth)
+  );
+  const sellerSnapshot = await getDocs(sellerQuery);
+
+  if (sellerSnapshot.empty) {
+    return { success: true, updatedGroups: 0, removedItemsCount: 0 };
+  }
+
+  const batch = writeBatch(db);
+  let updatedGroups = 0;
+  let removedItemsCount = 0;
+
+  sellerSnapshot.docs.forEach((sellerDoc) => {
+    const data = sellerDoc.data();
+    const items: any[] = data.items || [];
+    
+    // Filter out items that match deleted matches
+    const filteredItems = items.filter(item => {
+      const key = `${item.otgCompBillingItem}|${item.accountName}`;
+      const shouldRemove = itemsToRemove.has(key);
+      if (shouldRemove) {
+        removedItemsCount++;
+      }
+      return !shouldRemove;
+    });
+
+    // If no items left, delete the seller statement document
+    if (filteredItems.length === 0) {
+      batch.delete(sellerDoc.ref);
+      updatedGroups++;
+    } else {
+      // Recalculate totals
+      const totalOtgComp = filteredItems.reduce((sum, item) => sum + (item.otgComp || 0), 0);
+      const totalSellerComp = filteredItems.reduce((sum, item) => sum + (item.sellerComp || 0), 0);
+
+      // Update the document
+      batch.update(sellerDoc.ref, {
+        items: filteredItems,
+        totalOtgComp,
+        totalSellerComp,
+        processedAt: Timestamp.now(), // Update timestamp
+      });
+      updatedGroups++;
+    }
+  });
+
+  await batch.commit();
+
+  console.log(`[removeItemsFromSellerStatements] Removed ${removedItemsCount} items from ${updatedGroups} seller statement groups`);
+
+  return {
+    success: true,
+    updatedGroups,
+    removedItemsCount,
+  };
 }
 
 /**
@@ -265,6 +464,7 @@ export async function regenerateSellerStatements(
   // Delete in batches if needed
   const DELETE_BATCH_SIZE = 450;
   const sellerDocs = sellerSnapshot.docs;
+  const totalSellerBatches = Math.ceil(sellerDocs.length / DELETE_BATCH_SIZE);
   for (let i = 0; i < sellerDocs.length; i += DELETE_BATCH_SIZE) {
     const chunk = sellerDocs.slice(i, i + DELETE_BATCH_SIZE);
     const deleteBatch = writeBatch(db);
@@ -272,6 +472,12 @@ export async function regenerateSellerStatements(
       deleteBatch.delete(sellerDoc.ref);
     });
     await deleteBatch.commit();
+    
+    // Add delay between batches to prevent write stream exhaustion (except for the last batch)
+    const currentBatch = Math.floor(i / DELETE_BATCH_SIZE) + 1;
+    if (currentBatch < totalSellerBatches) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
   }
 
   // Store new seller statements
@@ -313,6 +519,7 @@ export async function deleteCarrierStatement(
   statementId: string;
   processingMonth: string;
   deletedMatchesCount: number;
+  deletedMatches: MatchedRow[];
   deletedSellerStatementsCount: number;
 }> {
   // Get statement info before deleting
@@ -337,9 +544,13 @@ export async function deleteCarrierStatement(
   
   const deletedMatchesCount = matchesSnapshot.docs.length;
   
+  // Extract matched rows before deleting (for updating seller statements)
+  const deletedMatches: MatchedRow[] = matchesSnapshot.docs.map(doc => doc.data().matchedRow);
+  
   // Delete matches in batches if needed
   const DELETE_BATCH_SIZE = 450;
   const matchDocs = matchesSnapshot.docs;
+  const totalMatchBatches = Math.ceil(matchDocs.length / DELETE_BATCH_SIZE);
   for (let i = 0; i < matchDocs.length; i += DELETE_BATCH_SIZE) {
     const chunk = matchDocs.slice(i, i + DELETE_BATCH_SIZE);
     const batch = writeBatch(db);
@@ -347,6 +558,12 @@ export async function deleteCarrierStatement(
       batch.delete(matchDoc.ref);
     });
     await batch.commit();
+    
+    // Add delay between batches to prevent write stream exhaustion (except for the last batch)
+    const currentBatch = Math.floor(i / DELETE_BATCH_SIZE) + 1;
+    if (currentBatch < totalMatchBatches) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
   }
 
   // Delete the statement (separate batch to ensure it's deleted even if matches deletion fails)
@@ -394,6 +611,132 @@ export async function deleteCarrierStatement(
     statementId,
     processingMonth,
     deletedMatchesCount,
-    deletedSellerStatementsCount: 0, // Seller statements are regenerated by client, not deleted here
+    deletedMatches, // Return deleted matches so client can update seller statements directly
+    deletedSellerStatementsCount: 0, // Seller statements are updated by client, not deleted here
   };
+}
+
+/**
+ * Save Master Data 2 to Firebase
+ * Stores each record as its own document in the masterData2 collection
+ * This avoids the 1MB per-document limit and allows for better querying
+ */
+export async function saveMasterData2(
+  records: any[]
+): Promise<void> {
+  if (!records || records.length === 0) {
+    console.warn('[saveMasterData2] No records to save');
+    return;
+  }
+  
+  const masterData2Collection = collection(db, 'masterData2');
+  
+  // Clean data for Firestore compatibility
+  const cleanedRecords = cleanForFirestore(records);
+  
+  console.log(`[saveMasterData2] Preparing to save ${cleanedRecords.length} records as individual documents`);
+  
+  // Firestore batch limit is 500 operations, so we need to batch
+  const BATCH_SIZE = 500;
+  let savedCount = 0;
+  
+  try {
+    // Delete all existing records first (to handle updates/replacements)
+    // Get all existing documents
+    const existingSnapshot = await getDocs(masterData2Collection);
+    const existingDocs = existingSnapshot.docs;
+    
+    // Delete in batches with delays to avoid overwhelming Firestore
+    for (let i = 0; i < existingDocs.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      const chunk = existingDocs.slice(i, i + BATCH_SIZE);
+      
+      chunk.forEach((docSnapshot) => {
+        batch.delete(docSnapshot.ref);
+      });
+      
+      await batch.commit();
+      console.log(`[saveMasterData2] Deleted ${chunk.length} existing records`);
+      
+      // Add delay between batches to avoid overwhelming Firestore
+      if (i + BATCH_SIZE < existingDocs.length) {
+        await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay
+      }
+    }
+    
+    // Save new records in batches with delays
+    for (let i = 0; i < cleanedRecords.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      const chunk = cleanedRecords.slice(i, i + BATCH_SIZE);
+      
+      chunk.forEach((record) => {
+        // Use record.id as document ID, or generate one if missing
+        const docId = record.id || `record-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const recordRef = doc(masterData2Collection, docId);
+        batch.set(recordRef, {
+          ...record,
+          updatedAt: Timestamp.now(),
+        });
+      });
+      
+      await batch.commit();
+      savedCount += chunk.length;
+      console.log(`[saveMasterData2] Saved batch: ${savedCount}/${cleanedRecords.length} records`);
+      
+      // Add delay between batches to avoid overwhelming Firestore (except for last batch)
+      if (i + BATCH_SIZE < cleanedRecords.length) {
+        await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay between batches
+      }
+    }
+    
+    console.log(`[saveMasterData2] Successfully saved ${savedCount} records to Firebase`);
+  } catch (error: any) {
+    console.error('[saveMasterData2] Error saving to Firestore:', error);
+    console.error('[saveMasterData2] Error code:', error.code);
+    console.error('[saveMasterData2] Error message:', error.message);
+    console.error('[saveMasterData2] Saved so far:', savedCount, 'of', cleanedRecords.length);
+    
+    if (error.code === 'permission-denied') {
+      throw new Error('Permission denied. Please check Firestore security rules.');
+    }
+    
+    // Re-throw with more context
+    throw new Error(`Failed to save Master Data 2: ${error.message || error.code || 'Unknown error'}`);
+  }
+}
+
+/**
+ * Update a single master record in Master Data 2
+ */
+export async function updateMasterData2Record(
+  recordId: string,
+  updates: Partial<any>
+): Promise<void> {
+  const recordRef = doc(db, 'masterData2', recordId);
+  const recordDoc = await getDoc(recordRef);
+  
+  if (!recordDoc.exists()) {
+    throw new Error(`Record with id ${recordId} not found`);
+  }
+  
+  const cleanedUpdates = cleanForFirestore([updates])[0];
+  
+  await setDoc(
+    recordRef,
+    {
+      ...cleanedUpdates,
+      updatedAt: Timestamp.now(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Delete a master record from Master Data 2
+ */
+export async function deleteMasterData2Record(
+  recordId: string
+): Promise<void> {
+  const recordRef = doc(db, 'masterData2', recordId);
+  await deleteDoc(recordRef);
 }

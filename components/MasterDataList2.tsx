@@ -5,6 +5,7 @@ import { loadReformattedMasterData } from '../services/reformattedMasterData';
 import { groupRecordsByAccount, AccountGroup } from '../services/accountGrouping';
 import AccountListItem from './AccountListItem';
 import AccountDetailsModal from './AccountDetailsModal';
+import { useSaveMasterData2 } from '../services/firebaseHooks';
 import * as XLSX from 'xlsx';
 
 interface MasterDataList2Props {
@@ -23,6 +24,140 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
   const [isLoadingDefault, setIsLoadingDefault] = useState(false);
   const [hasLoadedDefault, setHasLoadedDefault] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const saveMasterData2 = useSaveMasterData2();
+  
+  // Local state that syncs with prop (for editing)
+  const [localData, setLocalData] = useState<MasterRecord[]>(data);
+  const [firebaseLoaded, setFirebaseLoaded] = useState(false);
+  const [isUserUpdate, setIsUserUpdate] = useState(false);
+  const [isLoadingFirebase, setIsLoadingFirebase] = useState(true); // Track Firebase loading state
+  
+  // Dynamic Column State - Will be populated from CSV or Firebase data
+  const [columns, setColumns] = useState<ColumnDef[]>([]);
+  
+  // Sync prop changes to local state and derive columns from Firebase data
+  // Only update if not a user-initiated update (to avoid loops)
+  useEffect(() => {
+    // Don't sync if user just updated (Firebase will update via real-time listener)
+    if (isUserUpdate) {
+      return;
+    }
+    
+    // Mark Firebase as loaded after a short delay (to distinguish between "loading" and "empty")
+    // This helps show loading state instead of "no records found" initially
+    const loadingTimeout = setTimeout(() => {
+      setIsLoadingFirebase(false);
+    }, 500); // Wait 500ms - if data hasn't loaded by then, show empty state
+    
+    if (data.length > 0) {
+      // Data loaded - clear loading state immediately
+      setIsLoadingFirebase(false);
+      
+      // Only update if length changed or columns need to be derived
+      const needsUpdate = data.length !== localData.length || columns.length === 0;
+      
+      if (needsUpdate) {
+        setLocalData(data);
+        setFirebaseLoaded(true);
+        setHasLoadedDefault(true); // Mark as loaded so we don't reload CSV
+        
+        // Derive columns from Firebase data if columns aren't set yet
+        if (columns.length === 0 && data.length > 0) {
+          const firstRecord = data[0];
+          const allKeys = Object.keys(firstRecord).filter(key => 
+            key !== 'id' && 
+            key !== 'updatedAt' && 
+            !key.startsWith('_') // Filter out internal Firebase fields
+          );
+          
+          // Create a map of all keys for quick lookup
+          const keySet = new Set(allKeys);
+          
+          // Order columns according to CSV_COLUMN_ORDER, then append any remaining columns
+          const orderedKeys: string[] = [];
+          
+          // First, add columns in CSV order (if they exist in the record)
+          CSV_COLUMN_ORDER.forEach(csvKey => {
+            // Try exact match first
+            if (keySet.has(csvKey)) {
+              orderedKeys.push(csvKey);
+              keySet.delete(csvKey);
+            } else {
+              // Try case-insensitive match
+              const foundKey = Array.from(keySet).find(key => 
+                normalizeHeader(key).toLowerCase() === normalizeHeader(csvKey).toLowerCase()
+              );
+              if (foundKey) {
+                orderedKeys.push(foundKey);
+                keySet.delete(foundKey);
+              }
+            }
+          });
+          
+          // Add any remaining columns that weren't in CSV_COLUMN_ORDER
+          orderedKeys.push(...Array.from(keySet));
+          
+          // Build column definitions in the correct order
+          const derivedColumns: ColumnDef[] = orderedKeys.map(key => {
+            const sampleValue = firstRecord[key];
+            let type: 'text' | 'number' | 'percent' = 'text';
+            
+            if (key.toLowerCase().includes('price') || key.toLowerCase().includes('amount') || 
+                (key.toLowerCase().includes('comp') && key.toLowerCase().includes('$'))) {
+              type = 'number';
+            } else if (key.toLowerCase().includes('%') || key.toLowerCase().includes('percent')) {
+              type = 'percent';
+            } else if (typeof sampleValue === 'number') {
+              type = 'number';
+            }
+            
+            return {
+              key: key,
+              label: key,
+              type: type,
+              required: false
+            };
+          });
+          
+          setColumns(derivedColumns);
+          console.log(`[MasterDataList2] Derived ${derivedColumns.length} columns from Firebase data (ordered by CSV)`);
+        }
+        
+        if (data.length !== localData.length) {
+          console.log(`[MasterDataList2] Loaded ${data.length} records from Firebase`);
+        }
+      }
+    } else if (data.length === 0 && firebaseLoaded) {
+      // Firebase loaded but is empty - this is a real empty state
+      setIsLoadingFirebase(false);
+      console.log('[MasterDataList2] Firebase is empty');
+    }
+    
+    return () => {
+      clearTimeout(loadingTimeout);
+    };
+  }, [data, firebaseLoaded, columns.length, isUserUpdate, localData.length]);
+  
+  // Wrapper for onUpdate that also saves to Firebase
+  const handleUpdate = useCallback(async (newData: MasterRecord[]) => {
+    setIsUserUpdate(true); // Mark as user-initiated update
+    setLocalData(newData);
+    onUpdate(newData);
+    
+    // Save to Firebase
+    setIsSaving(true);
+    try {
+      await saveMasterData2(newData);
+      console.log('[MasterDataList2] Saved to Firebase');
+    } catch (error: any) {
+      console.error('[MasterDataList2] Failed to save to Firebase:', error);
+      setImportError(`Failed to save to Firebase: ${error.message}`);
+    } finally {
+      setIsSaving(false);
+      setIsUserUpdate(false);
+    }
+  }, [onUpdate, saveMasterData2]);
   
   // Account Details Modal State
   const [selectedAccount, setSelectedAccount] = useState<AccountGroup | null>(null);
@@ -33,9 +168,6 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 1000;
-  
-  // Dynamic Column State - Will be populated from CSV
-  const [columns, setColumns] = useState<ColumnDef[]>([]);
 
   // Helper function to get field value
   const getFieldValue = useCallback((record: MasterRecord, ...fieldNames: string[]): string | undefined => {
@@ -56,11 +188,11 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
     return undefined;
   }, []);
 
-  // Group records by account
+  // Group records by account (use localData for display)
   const accountGroups = useMemo(() => {
-    if (data.length === 0) return [];
-    return groupRecordsByAccount(data);
-  }, [data]);
+    if (localData.length === 0) return [];
+    return groupRecordsByAccount(localData);
+  }, [localData]);
 
   // Filter accounts based on search query
   const filteredAccountGroups = useMemo(() => {
@@ -118,6 +250,72 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
     }
   }, [accountGroups, selectedAccount]);
 
+  // CSV Column Order - matches the exact order from the reformatted CSV file (62 columns)
+  const CSV_COLUMN_ORDER = [
+    'ST',
+    'Account **CARRIER**',
+    'Carrier Comp Type OTG PDNG OTG ADD OTG - Zayo = zMAP NEW = On comp statement PDNG in Monday',
+    'Carrier Relationship',
+    'Service Provider',
+    'Status / Type',
+    'Opportunity "Promo Year" **KEEP ORIGINAL OPP**',
+    'Promo Year Revenue / OG SF Opp zMAP = anything new to OTG **KEEP ORIGINAL OPP**',
+    'Install Date OR OTG payable Date',
+    'OTG Comp Billing item',
+    'Cust. ACTIVE BAN',
+    'Historic BAN - non-ZNS',
+    'Item Desc. from current Carrier Statement',
+    'PAYING Monthly Comp % to OTG from current Carrier Statement',
+    'Quantity',
+    'Price',
+    'Monthly Unit Price Quantity x Price QRC/SEMI//YRC x 4, 6, or 12',
+    'EXPECTED/Mo. OTG Comp % - column R Comp Key',
+    'Monthly Comp to OTG per EXPECTED Comp %',
+    'One-Time Unit Price / SPIFF',
+    'One-Time Comp % to OTG',
+    'One-Time Comp Expected to OTG',
+    'Cust. Billed Type',
+    'COMP 1',
+    'COMP 2',
+    'COMP 3',
+    'COMP 4',
+    'before 07/2025 COMP 1',
+    'before 07/2025 COMP 2',
+    'before 07/2025 COMP 3',
+    'before 07/2025 COMP 4',
+    'NOTES RED Highlight = Differs from before comp key',
+    'MISSING OTG COMP',
+    'SVC Change Date',
+    'Prev. Unit Price',
+    'OTG Compensable Product NAME',
+    'MISSING MONDAY',
+    'Sig Date',
+    'Term',
+    'Location Name',
+    'Service Address',
+    'Order #',
+    'Circuit ID',
+    'Unique Order Details SOC / SC',
+    'TED',
+    'Renewal Details',
+    'Monday Product Comments - EXCLUDE SPLIT NOTES/VALUES',
+    'Monday Item ID',
+    'COMP CALC Mo. OTG RCVD Funds>>',
+    'OTG PD since July Seller Statemen June Deposit',
+    'July Seller Statement - June Deposit',
+    'Aug Seller Stmt - July Deposit',
+    'Sept Seller Stmt - Aug Deposit',
+    'Oct Seller Stmt - Sept Deposit',
+    'Nov Seller Stmt - Oct Deposit',
+    'Dec Seller Stmt - Nov Deposit',
+    'Jan Seller Stmt - Dec Deposit',
+    'Feb Seller Stmt - Jan Deposit',
+    'Mar Seller Stmt - Feb Deposit',
+    'Apr Seller Stmt - Mar Deposit',
+    'May Seller Stmt - Apr Deposit',
+    'June Seller Stmt - May Deposit'
+  ];
+
   // Helper to normalize CSV headers
   const normalizeHeader = (header: string): string => {
     return header.trim().replace(/^"|"$/g, '').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
@@ -148,7 +346,7 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
     return num || 0;
   };
 
-  const processImportData = useCallback((rawData: any[]) => {
+  const processImportData = useCallback(async (rawData: any[]) => {
     if (rawData.length === 0) throw new Error("File is empty.");
 
     // Normalize Data Keys
@@ -236,31 +434,11 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
     }
 
     if (newColumnDefs.length > 0) setColumns(newColumnDefs);
-    onUpdate(newRecords);
-  }, [onUpdate]);
+    await handleUpdate(newRecords);
+  }, [handleUpdate]);
 
-  // Auto-load reformatted CSV on mount
-  useEffect(() => {
-    const loadDefaultData = async () => {
-      if (data.length === 0 && !hasLoadedDefault && !isLoadingDefault) {
-        setIsLoadingDefault(true);
-        setImportError(null);
-        try {
-          const rawData = await loadReformattedMasterData();
-          processImportData(rawData);
-          setHasLoadedDefault(true);
-        } catch (error: any) {
-          console.error('Failed to load reformatted master data:', error);
-          setImportError(`Failed to load reformatted data: ${error.message}`);
-        } finally {
-          setIsLoadingDefault(false);
-        }
-      }
-    };
-
-    loadDefaultData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [processImportData]);
+  // NO auto-load CSV - only load from Firebase
+  // User can manually click "Reload Reformatted CSV" if needed
 
   const handleReloadDefaultData = async () => {
     if (confirm('This will replace all current master data with the reformatted CSV file. Continue?')) {
@@ -270,6 +448,7 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
         const rawData = await loadReformattedMasterData();
         processImportData(rawData);
         setHasLoadedDefault(true);
+        // processImportData will save to Firebase automatically
       } catch (error: any) {
         console.error('Failed to reload reformatted master data:', error);
         setImportError(`Failed to reload reformatted data: ${error.message}`);
@@ -278,12 +457,13 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
       }
     }
   };
+  
 
   const exportCSV = () => {
-    if (columns.length === 0 || data.length === 0) return;
+    if (columns.length === 0 || localData.length === 0) return;
     
     const headers = columns.map(c => c.label).join(',');
-    const rows = data.map(r => {
+    const rows = localData.map(r => {
       return columns.map(c => {
         let val = r[c.key];
         if (typeof val === 'string') val = `"${val}"`;
@@ -309,9 +489,15 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
           <p className="text-slate-500 text-sm mt-1">Complete master service list with all {columns.length} columns displayed.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {isSaving && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 text-green-700 rounded-lg text-xs sm:text-sm font-medium">
+              <Loader2 className="animate-spin" size={16} />
+              Saving to Firebase...
+            </div>
+          )}
           <button 
             onClick={exportCSV}
-            disabled={data.length === 0}
+            disabled={localData.length === 0}
             className="flex items-center gap-2 px-3 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors text-xs sm:text-sm font-medium disabled:opacity-50"
           >
             <Download size={16} /> Export CSV
@@ -364,7 +550,7 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
                   <FileJson size={20} className="text-blue-600" />
                   <div>
                     <p className="text-xs text-slate-500">Total Line Items</p>
-                    <p className="text-lg font-semibold text-slate-800">{data.length}</p>
+                    <p className="text-lg font-semibold text-slate-800">{localData.length}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -395,12 +581,20 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
           )}
 
           {/* Account List */}
-          {filteredAccountGroups.length === 0 && accountGroups.length === 0 ? (
+          {isLoadingFirebase && localData.length === 0 ? (
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-16">
+              <div className="flex flex-col items-center gap-2 text-center">
+                <Loader2 className="animate-spin text-indigo-600" size={48} />
+                <p className="text-lg font-medium text-slate-600">Loading Master Data 2...</p>
+                <p className="text-sm text-slate-500">Fetching data from Firebase</p>
+              </div>
+            </div>
+          ) : filteredAccountGroups.length === 0 && accountGroups.length === 0 ? (
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-16">
               <div className="flex flex-col items-center gap-2 text-center">
                 <Upload size={48} className="text-slate-300" />
                 <p className="text-lg font-medium text-slate-600">No master records found</p>
-                <p className="text-sm text-slate-500">Loading reformatted CSV data...</p>
+                <p className="text-sm text-slate-500">Click "Reload Reformatted CSV" to load data</p>
               </div>
             </div>
           ) : filteredAccountGroups.length === 0 ? (
@@ -455,12 +649,12 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
 
       {/* Account Details Modal */}
       {selectedAccount && (
-        <AccountDetailsModal
+          <AccountDetailsModal
           account={selectedAccount}
           columns={columns}
           onClose={() => setSelectedAccount(null)}
-          onUpdate={onUpdate}
-          allRecords={data}
+          onUpdate={handleUpdate}
+          allRecords={localData}
         />
       )}
     </div>

@@ -15,5 +15,11 @@ service cloud.firestore {
     match /sellerStatements/{document=**} {
       allow read, write: if true;
     }
+    
+    // Master Data 2 - allow read/write for now (update for production with auth)
+    // Collection structure: each record is its own document
+    match /masterData2/{recordId} {
+      allow read, write: if true;
+    }
   }
 }
