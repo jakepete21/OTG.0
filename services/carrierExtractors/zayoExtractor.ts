@@ -277,14 +277,13 @@ export const extractZayoData = async (
       continue;
     }
     
-    // ENA Rule: If Svc Name is blank, use BAN as billing item, add * to account name, set Provider="ENA"
+    // ENA Rule: If Svc Name is blank, use BAN as billing item, set Provider="ENA"
     let accountName = customerAccount || '';
     let billingItem = svcName || '';
     let provider = 'Zayo';
     
     if (!svcName && billingAccountNumber) {
       billingItem = billingAccountNumber; // Use BAN as billing item
-      accountName = '*' + accountName; // Add asterisk prefix
       provider = 'ENA';
     }
     

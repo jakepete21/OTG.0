@@ -10,6 +10,7 @@ import FilePreviewModalWrapper from './FilePreviewModalWrapper';
 import { UploadCloud, FileText, AlertTriangle, CheckCircle, Loader2, DollarSign, XCircle, FileJson, Calendar, Eye, X, CheckCircle2 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import * as XLSX from 'xlsx';
+import { formatCurrency, formatNumber } from '../services/numberFormat';
 
 interface DashboardProps {
   masterData: MasterRecord[];
@@ -91,7 +92,7 @@ const Dashboard: React.FC<DashboardProps> = ({
    */
   const processBatchFiles = async (files: File[]) => {
     if (masterData.length === 0) {
-      setErrorMsg("Master Data 2 is empty. Please load Master Data 2 before processing.");
+      setErrorMsg("Comp Key is empty. Please load Comp Key before processing.");
       return;
     }
 
@@ -332,7 +333,7 @@ const Dashboard: React.FC<DashboardProps> = ({
 
     try {
       if (masterData.length === 0) {
-        throw new Error("Master Data 2 is empty. Please load Master Data 2 before processing.");
+        throw new Error("Comp Key is empty. Please load Comp Key before processing.");
       }
 
       // Detect if this is a carrier statement (XLSX file)
@@ -779,7 +780,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               <p className="text-sm text-slate-500 font-medium mb-1">Total Commission</p>
               <div className="text-2xl font-bold text-indigo-600 flex items-center">
                 <DollarSign size={20} className="text-indigo-400 mr-1" />
-                {carrierStatementResult.matchedRows.reduce((sum, r) => sum + (r.commissionAmount || 0), 0).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                {formatCurrency(carrierStatementResult.matchedRows.reduce((sum, r) => sum + (r.commissionAmount || 0), 0))}
               </div>
             </div>
           </div>
@@ -806,8 +807,8 @@ const Dashboard: React.FC<DashboardProps> = ({
                   <div key={stmt.roleGroup} className="bg-slate-50 p-4 rounded-lg border border-slate-200">
                     <h4 className="font-semibold text-slate-800 mb-2">{stmt.roleGroup}</h4>
                     <p className="text-sm text-slate-600">Items: {stmt.items.length}</p>
-                    <p className="text-sm text-slate-600">Seller Comp: ${stmt.totalSellerComp.toFixed(2)}</p>
-                    <p className="text-sm text-slate-600">OTG Comp: ${stmt.totalOtgComp.toFixed(2)}</p>
+                    <p className="text-sm text-slate-600">Seller Comp: {formatCurrency(stmt.totalSellerComp)}</p>
+                    <p className="text-sm text-slate-600">OTG Comp: {formatCurrency(stmt.totalOtgComp)}</p>
                   </div>
                 ))}
               </div>
@@ -832,14 +833,14 @@ const Dashboard: React.FC<DashboardProps> = ({
               <p className="text-sm text-slate-500 font-medium mb-1">Total Revenue Found</p>
               <div className="text-2xl font-bold text-slate-800 flex items-center">
                 <DollarSign size={20} className="text-slate-400 mr-1" />
-                {totalRevenue.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                {formatCurrency(totalRevenue)}
               </div>
             </div>
             <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
               <p className="text-sm text-slate-500 font-medium mb-1">Total Commission</p>
               <div className="text-2xl font-bold text-indigo-600 flex items-center">
                 <DollarSign size={20} className="text-indigo-400 mr-1" />
-                {totalCommission.toLocaleString(undefined, {minimumFractionDigits: 2})}
+                {formatCurrency(totalCommission)}
               </div>
             </div>
             <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
@@ -918,7 +919,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                           <td className="px-6 py-3 text-slate-700">{item.clientName}</td>
                           <td className="px-6 py-3 text-slate-600">{item.serviceType}</td>
                           <td className="px-6 py-3">{item.salesperson}</td>
-                          <td className="px-6 py-3 text-right font-mono text-slate-600">${item.expectedAmount.toFixed(2)}</td>
+                          <td className="px-6 py-3 text-right font-mono text-slate-600">{formatCurrency(item.expectedAmount)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -963,8 +964,8 @@ const Dashboard: React.FC<DashboardProps> = ({
                               {item.discrepancyType}
                             </span>
                           </td>
-                          <td className="px-6 py-3 text-right font-mono text-slate-700">${item.amountReceived.toFixed(2)}</td>
-                          <td className="px-6 py-3 text-right font-bold text-indigo-600">${item.commissionAmount.toFixed(2)}</td>
+                          <td className="px-6 py-3 text-right font-mono text-slate-700">{formatCurrency(item.amountReceived)}</td>
+                          <td className="px-6 py-3 text-right font-bold text-indigo-600">{formatCurrency(item.commissionAmount)}</td>
                           <td className="px-6 py-3 text-slate-500 text-xs">{item.explanation}</td>
                         </tr>
                       );

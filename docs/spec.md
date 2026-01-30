@@ -17,25 +17,17 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 
 ### Current Features
 
-#### 1. Master Data Management (`MasterDataList`)
-- Import master service records via CSV, Excel, JSON, PDF, or paste from Sheets
+#### 1. Comp Key (`MasterDataList2`)
+- **Full Column Display**: Shows all 62 columns from the reformatted OTG.0 Comp Key CSV
 - **Account-Level View**: Master data is grouped by account (Account **CARRIER** + OTG Comp Billing item)
 - Account cards display summary information (total monthly comp, line item count, service provider, etc.)
 - Click account card to expand and view all line items in a modal
 - CRUD operations (add, edit, delete records) available within account detail modal
-- Dynamic column management (add/remove/reorder columns)
-- Standard fields: `clientName`, `serviceType`, `salesperson`, `expectedAmount`, `splitPercentage`
-- Custom fields supported
-- Export to CSV
-- **CSV Analysis**: Analyze CSV files with Gemini AI to identify essential columns, data quality issues, and cleaning suggestions
-
-#### 1b. Master Data 2 (`MasterDataList2`)
-- **Full Column Display**: Shows all 62 columns from the reformatted OTG.0 Comp Key CSV
-- Same account-level grouping as Master Data
 - Dynamic column rendering in account detail modals (all columns visible)
 - Auto-loads reformatted CSV on mount
 - Export functionality for complete dataset
 - Uses reformatted CSV file with proper column ordering
+- **Number Formatting**: All numbers display with proper comma formatting (e.g., $1,234.56)
 
 #### 2. Upload Statement (`Dashboard`)
 - Drag-and-drop file upload for monthly commission statements
@@ -56,9 +48,15 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 - Summary cards showing dispute counts
 
 #### 4. Commissions (`Reports`)
-- Monthly commission statements grouped by salesperson
+- **Expandable Month Sections**: Shows January 2026 through June 2026 as expandable accordion sections
+- **Carrier Status Display**: Each month shows carrier upload status (✅ uploaded, ❌ missing) for all 6 carriers
+- **Status Badges**: Complete (6/6 carriers), Partial (1-5/6), or Empty (0/6) status per month
+- **Seller Statements**: When expanded, shows seller statements grouped by role groups (RD1/2, RD3/4, RM1/2, RM3/4, OVR/RD5, OTG)
+- **Account View & Line Item View**: Toggle between account-level summary or detailed line item view
+- **Number Formatting**: All currency amounts display with proper comma formatting (e.g., $1,234.56)
 - Expandable transaction details
 - Export/print functionality (PDF export)
+- **Carrier Statement Management**: Delete carrier statements directly from Commissions tab with confirmation
 
 ### Data Flow
 

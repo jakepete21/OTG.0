@@ -483,12 +483,8 @@ export const matchCarrierStatements = (
 
     matchedCount++;
 
-    // Provider override rule: * account on Zayo => ENA
-    let provider = matchData.provider || '';
-    if (String(row.accountName || '').startsWith('*') && 
-        String(row.carrierStatement || '').toLowerCase() === 'zayo') {
-      provider = 'ENA';
-    }
+    // Provider is already set correctly in extractor (ENA rule)
+    let provider = row.provider || matchData.provider || '';
 
     // Lookup State from Master Data if missing in statement
     let state = row.state || '';

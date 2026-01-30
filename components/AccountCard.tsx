@@ -1,6 +1,7 @@
 import React from 'react';
 import { ChevronRight, Building2, FileText, DollarSign, Users, Tag } from 'lucide-react';
 import { AccountGroup } from '../services/accountGrouping';
+import { formatCurrency, formatWholeNumber } from '../services/numberFormat';
 
 interface AccountCardProps {
   account: AccountGroup;
@@ -43,10 +44,7 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onClick }) => {
           <div className="min-w-0">
             <p className="text-xs text-slate-500">Monthly Comp</p>
             <p className="text-sm font-semibold text-slate-800 truncate">
-              ${summary.totalMonthlyComp.toLocaleString('en-US', { 
-                minimumFractionDigits: 2, 
-                maximumFractionDigits: 2 
-              })}
+              {formatCurrency(summary.totalMonthlyComp)}
             </p>
           </div>
         </div>
@@ -57,7 +55,7 @@ const AccountCard: React.FC<AccountCardProps> = ({ account, onClick }) => {
           <div className="min-w-0">
             <p className="text-xs text-slate-500">Line Items</p>
             <p className="text-sm font-semibold text-slate-800">
-              {summary.lineItemCount}
+              {formatWholeNumber(summary.lineItemCount)}
             </p>
           </div>
         </div>

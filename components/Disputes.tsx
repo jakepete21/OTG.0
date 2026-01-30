@@ -1,6 +1,7 @@
 import React from 'react';
 import { AnalysisResult, DiscrepancyType, ProcessedItem, CarrierStatementProcessingResult, DisputeType } from '../types';
 import { AlertTriangle, XCircle, DollarSign, FileWarning, TrendingUp, Calendar } from 'lucide-react';
+import { formatCurrency } from '../services/numberFormat';
 
 interface DisputesProps {
   analysisResult: AnalysisResult | null;
@@ -169,7 +170,7 @@ const Disputes: React.FC<DisputesProps> = ({ analysisResult, carrierStatementRes
                     <td className="px-6 py-3 text-slate-700 font-medium">{item.clientName}</td>
                     <td className="px-6 py-3 text-slate-600">{item.serviceType}</td>
                     <td className="px-6 py-3">{item.salesperson}</td>
-                    <td className="px-6 py-3 text-right font-mono text-slate-700">${item.expectedAmount.toFixed(2)}</td>
+                    <td className="px-6 py-3 text-right font-mono text-slate-700">{formatCurrency(item.expectedAmount)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -210,13 +211,13 @@ const Disputes: React.FC<DisputesProps> = ({ analysisResult, carrierStatementRes
                       <td className="px-6 py-3 text-slate-600">{dispute.otgCompBillingItem}</td>
                       <td className="px-6 py-3 text-slate-600">{dispute.provider || dispute.carrierStatement || '-'}</td>
                       <td className="px-6 py-3 text-right font-mono text-slate-700">
-                        {dispute.expectedAmount !== undefined ? `$${dispute.expectedAmount.toFixed(2)}` : '-'}
+                        {dispute.expectedAmount !== undefined ? formatCurrency(dispute.expectedAmount) : '-'}
                       </td>
                       <td className="px-6 py-3 text-right font-mono text-slate-700">
-                        {dispute.actualAmount !== undefined ? `$${dispute.actualAmount.toFixed(2)}` : '-'}
+                        {dispute.actualAmount !== undefined ? formatCurrency(dispute.actualAmount) : '-'}
                       </td>
                       <td className="px-6 py-3 text-right font-mono font-bold text-red-600">
-                        {dispute.difference !== undefined ? `$${dispute.difference.toFixed(2)}` : '-'}
+                        {dispute.difference !== undefined ? formatCurrency(dispute.difference) : '-'}
                       </td>
                       <td className="px-6 py-3 text-slate-500 text-xs">{dispute.explanation}</td>
                     </tr>
@@ -259,8 +260,8 @@ const Disputes: React.FC<DisputesProps> = ({ analysisResult, carrierStatementRes
                       <td className="px-6 py-3 text-slate-600 whitespace-nowrap">{item.date}</td>
                       <td className="px-6 py-3 font-medium text-slate-800">{item.clientName}</td>
                       <td className="px-6 py-3 text-slate-600">{item.serviceDescription}</td>
-                      <td className="px-6 py-3 text-right font-mono text-slate-700">${item.amountReceived.toFixed(2)}</td>
-                      <td className="px-6 py-3 text-right font-bold text-indigo-600">${item.commissionAmount.toFixed(2)}</td>
+                      <td className="px-6 py-3 text-right font-mono text-slate-700">{formatCurrency(item.amountReceived)}</td>
+                      <td className="px-6 py-3 text-right font-bold text-indigo-600">{formatCurrency(item.commissionAmount)}</td>
                       <td className="px-6 py-3 text-slate-600">{item.salesperson || 'Unassigned'}</td>
                       <td className="px-6 py-3 text-slate-500 text-xs">{item.explanation}</td>
                     </tr>

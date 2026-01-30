@@ -62,6 +62,71 @@ Acceptance:
 
 ### 📋 Backlog
 
+#### ✅ Ticket: Update Commissions Tab to Show Expandable Months Jan-Jun 2026 with Carrier Status (COMPLETED 2026-01-30)
+**Goal**: Update Commissions tab to show January 2026 through June 2026 as expandable sections, each showing carrier statement upload status
+
+**Completed Changes**:
+
+1. **Month List Generation**:
+   - Created array of months: Jan 2026 through Jun 2026
+   - Merged with Firebase processing months (uses Firebase data if available, otherwise generated structure)
+
+2. **UI Structure Updates**:
+   - Removed month selector dropdown/buttons
+   - Created expandable month sections (accordion) with chevron icons
+   - Each month section shows carrier status (always visible) and seller statements (when expanded)
+   - Status badges show Complete/Partial/Empty for each month
+
+3. **Carrier Status Display**:
+   - Shows carrier status grid for each month (always visible)
+   - Displays ✅ for uploaded carriers, ❌ for missing carriers
+   - Delete functionality with per-statement confirmation (fixed deletion bug)
+
+4. **Seller Statements**:
+   - Added Account View and Line Item View toggle
+   - Account View: Groups items by account name with totals
+   - Line Item View: Shows individual billing items (original view)
+   - Both views show proper number formatting with commas
+
+5. **Additional Improvements**:
+   - Removed Master Data tab, renamed Master Data 2 to "Comp Key"
+   - Added number formatting utility (formatCurrency, formatNumber, formatWholeNumber)
+   - Removed "*" prefix from ENA account names (now uses provider field)
+   - Fixed deletion confirmation to use statement ID instead of carrier name
+
+**Files Updated**:
+- `components/Reports.tsx` - Complete redesign with expandable months
+- `components/Layout.tsx` - Removed Master Data tab, renamed to Comp Key
+- `components/MasterDataList2.tsx` - Renamed to Comp Key
+- `App.tsx` - Updated to use Comp Key as main tab
+- `components/Dashboard.tsx` - Updated error messages
+- `services/numberFormat.ts` - New utility for number formatting
+- `components/AccountCard.tsx`, `AccountListItem.tsx`, `AccountDetailsModal.tsx` - Added number formatting
+- `components/Dashboard.tsx`, `Disputes.tsx` - Added number formatting
+- `services/carrierExtractors/zayoExtractor.ts` - Removed "*" prefix
+- `services/carrierExtractors/gotoExtractor.ts` - Removed "*" prefix
+- `services/matchingService.ts` - Updated to use provider field
+- `services/sellerStatements.ts` - Updated to use provider field for ENA detection
+
+**Acceptance**:
+- [x] Shows 6 months: January 2026 through June 2026
+- [x] Each month is expandable/collapsible
+- [x] Carrier status grid shows for each month (always visible)
+- [x] Status badge shows Complete/Partial/Empty for each month
+- [x] January 2026 shows current seller statements when expanded
+- [x] Other months show empty state when expanded (if no data)
+- [x] Carrier status shows uploaded (✅) vs missing (❌) for each carrier
+- [x] Expand/collapse works correctly
+- [x] No month selector dropdown/buttons
+- [x] UI is clean and organized
+- [x] Account View and Line Item View toggle works
+- [x] Number formatting with commas throughout
+- [x] Deletion works correctly per statement (not per carrier)
+
+**Dependencies**: None
+
+---
+
 #### ✅ Ticket: Switch Statement Processing to Use Master Data 2 (COMPLETED)
 **Goal**: Update all statement processing automations to use Master Data 2 instead of Master Data
 

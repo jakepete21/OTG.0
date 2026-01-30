@@ -485,8 +485,8 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Master Data 2 (All Columns)</h2>
-          <p className="text-slate-500 text-sm mt-1">Complete master service list with all {columns.length} columns displayed.</p>
+          <h2 className="text-2xl font-bold text-slate-800">Comp Key</h2>
+          <p className="text-slate-500 text-sm mt-1">Complete compensation key with all {columns.length} columns displayed.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {isSaving && (
@@ -585,7 +585,7 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-16">
               <div className="flex flex-col items-center gap-2 text-center">
                 <Loader2 className="animate-spin text-indigo-600" size={48} />
-                <p className="text-lg font-medium text-slate-600">Loading Master Data 2...</p>
+                <p className="text-lg font-medium text-slate-600">Loading Comp Key...</p>
                 <p className="text-sm text-slate-500">Fetching data from Firebase</p>
               </div>
             </div>

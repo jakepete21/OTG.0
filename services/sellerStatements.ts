@@ -65,10 +65,10 @@ const summarizeGroup = (
     rowsIncluded++;
     totalCommissionIncluded += toNum(row.commissionAmount);
 
-    // Preserve star behavior: keep * rows separate so they don't merge with non-* for same billing item
+    // Keep ENA accounts separate so they don't merge with regular accounts for same billing item
     // Aggregate by billing item only (per Google automation: "Group by billing item")
-    const hasStar = String(row.accountName || '').includes('*');
-    const key = hasStar ? `${billingItem}__star` : billingItem;
+    const isENA = String(row.provider || '').toUpperCase() === 'ENA';
+    const key = isENA ? `${billingItem}__ena` : billingItem;
 
     let acc = buckets.get(key);
     if (!acc) {

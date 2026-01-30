@@ -2,6 +2,7 @@ import React, { useState, useCallback, useMemo } from 'react';
 import { X, Edit2, Trash2, Save, FileText, DollarSign, ChevronDown, ChevronUp, Bug } from 'lucide-react';
 import { MasterRecord } from '../types';
 import { AccountGroup } from '../services/accountGrouping';
+import { formatNumber, formatCurrency, formatWholeNumber } from '../services/numberFormat';
 
 interface AccountDetailsModalProps {
   account: AccountGroup;
@@ -486,7 +487,7 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
                                         typeof value === 'number' ? (
                                           col.type === 'percent' 
                                             ? `${(value * 100).toFixed(2)}%`
-                                            : value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                            : formatNumber(value, 2)
                                         ) : (
                                           strValue
                                         )
@@ -811,17 +812,17 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
                           </div>
                           <div className="w-32 flex-shrink-0 text-right pt-0.5">
                             <span className="text-sm font-semibold text-slate-800">
-                              ${priceNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatCurrency(priceNum)}
                             </span>
                           </div>
                           <div className="w-36 flex-shrink-0 text-right pt-0.5">
                             <span className="text-sm font-semibold text-slate-800">
-                              ${monthlyUnitPriceNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatCurrency(monthlyUnitPriceNum)}
                             </span>
                           </div>
                           <div className="w-32 flex-shrink-0 text-right pt-0.5">
                             <span className="text-sm font-semibold text-indigo-600">
-                              ${monthlyCompNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {formatCurrency(monthlyCompNum)}
                             </span>
                           </div>
                           <div className="w-28 flex-shrink-0 pt-0.5">
@@ -932,21 +933,21 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
                   <div className="w-48 flex-shrink-0"></div>
                   <div className="w-28 flex-shrink-0"></div>
                   <div className="w-24 flex-shrink-0 text-right">
-                    <span className="text-sm font-bold text-slate-800">{totals.totalQuantity.toLocaleString('en-US')}</span>
+                    <span className="text-sm font-bold text-slate-800">{formatWholeNumber(totals.totalQuantity)}</span>
                   </div>
                   <div className="w-32 flex-shrink-0 text-right">
                     <span className="text-sm font-bold text-slate-800">
-                      ${totals.totalPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {formatCurrency(totals.totalPrice)}
                     </span>
                   </div>
                   <div className="w-36 flex-shrink-0 text-right">
                     <span className="text-sm font-bold text-slate-800">
-                      ${totals.totalMonthlyUnitPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {formatCurrency(totals.totalMonthlyUnitPrice)}
                     </span>
                   </div>
                   <div className="w-32 flex-shrink-0 text-right">
                     <span className="text-sm font-bold text-indigo-700">
-                      ${totals.totalMonthlyComp.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {formatCurrency(totals.totalMonthlyComp)}
                     </span>
                   </div>
                   <div className="w-28 flex-shrink-0"></div>

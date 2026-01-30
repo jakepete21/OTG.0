@@ -11,8 +11,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
 
   const navItems = [
-    { id: 'master-data', label: 'Master Data', icon: Users },
-    { id: 'master-data-2', label: 'Master Data 2', icon: Users },
+    { id: 'comp-key', label: 'Comp Key', icon: Users },
     { id: 'upload-statement', label: 'Upload Statement', icon: UploadCloud },
     { id: 'disputes', label: 'Disputes', icon: AlertTriangle },
     { id: 'commissions', label: 'Commissions', icon: FileText },

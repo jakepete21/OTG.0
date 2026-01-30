@@ -128,9 +128,7 @@ const processEquipmentTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] =
     
     const group = groups.get(billingItem)!;
     if (!group.accountName && accountName) {
-      group.accountName = '*' + accountName; // Add * prefix
-    } else if (group.accountName && !group.accountName.startsWith('*')) {
-      group.accountName = '*' + group.accountName;
+      group.accountName = accountName;
     }
     group.invoiceTotal += invoiceTotal;
     group.commissionAmount += commissionAmount;

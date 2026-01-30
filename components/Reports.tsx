@@ -5,6 +5,7 @@ import { exportCommissionStatementPDF } from '../services/pdfExport';
 import { useProcessingMonths, useSellerStatements, useCarrierStatements, useDeleteCarrierStatement, useRegenerateSellerStatements, useRemoveItemsFromSellerStatements } from '../services/firebaseHooks';
 import { CarrierType } from '../services/monthDetection';
 import { getMatchesForCarrierStatement } from '../services/firebaseQueries';
+import { formatCurrency } from '../services/numberFormat';
 
 interface ReportsProps {
   analysisResult: AnalysisResult | null;
@@ -20,12 +21,437 @@ const CARRIER_LABELS: Record<CarrierType, string> = {
   Allstream: 'Allstream',
 };
 
+interface MonthSectionProps {
+  monthData: {
+    monthKey: string;
+    monthLabel: string;
+    carriers: Record<string, string>;
+    status: 'complete' | 'partial' | 'empty';
+  };
+  isExpanded: boolean;
+  onToggle: () => void;
+  statusBadge: string;
+  statusColor: string;
+  allCarriers: CarrierType[];
+  uploadedCarriers: CarrierType[];
+  pendingDeletions: Set<string>;
+  deletingStatementId: string | null;
+  deleteConfirmStatementId: string | null;
+  setDeleteConfirmStatementId: (statementId: string | null) => void;
+  onDeleteCarrier: (statementId: string, carrier: string, processingMonth: string, sellerStatementsForMonth?: SellerStatement[]) => void;
+  onRegenerate: () => void;
+  isRegenerating: boolean;
+  carrierStatementResult: CarrierStatementProcessingResult | null;
+  optimisticSellerStatements: {
+    monthKey: string;
+    statementId: string;
+    filteredStatements: SellerStatement[];
+  } | null;
+  expandedRoleGroup: string | null;
+  toggleRoleGroup: (roleGroup: string) => void;
+}
+
+/**
+ * Account-level aggregation for seller statements
+ */
+interface AccountSummary {
+  accountName: string;
+  state: string;
+  provider: string;
+  totalOtgComp: number;
+  totalSellerComp: number;
+  itemCount: number;
+}
+
+/**
+ * MonthSection component - displays a single expandable month with carrier status and seller statements
+ */
+const MonthSection: React.FC<MonthSectionProps> = ({
+  monthData,
+  isExpanded,
+  onToggle,
+  statusBadge,
+  statusColor,
+  allCarriers,
+  uploadedCarriers,
+  pendingDeletions,
+  deletingStatementId,
+  deleteConfirmStatementId,
+  setDeleteConfirmStatementId,
+  onDeleteCarrier,
+  onRegenerate,
+  isRegenerating,
+  carrierStatementResult,
+  optimisticSellerStatements,
+  expandedRoleGroup,
+  toggleRoleGroup,
+}) => {
+  // View toggle: 'account' or 'line-item'
+  const [sellerStatementView, setSellerStatementView] = useState<'account' | 'line-item'>('account');
+  
+  // Use hooks for this specific month
+  const sellerStatementsForMonth = useSellerStatements(monthData.monthKey);
+  
+  // Process seller statements
+  const sellerStatements: SellerStatement[] = useMemo(() => {
+    let statements: SellerStatement[] = [];
+    
+    if (sellerStatementsForMonth && sellerStatementsForMonth.length > 0) {
+      statements = sellerStatementsForMonth.map(stmt => ({
+        roleGroup: stmt.roleGroup,
+        items: stmt.items,
+        totalOtgComp: stmt.totalOtgComp,
+        totalSellerComp: stmt.totalSellerComp,
+      }));
+    } else if (carrierStatementResult && monthData.monthKey === "2026-01") {
+      // Fallback to local result if Firebase data not available (only for January 2026)
+      statements = carrierStatementResult.sellerStatements;
+    }
+
+    // Apply optimistic filtering if we have a pending deletion for this month
+    if (optimisticSellerStatements && optimisticSellerStatements.monthKey === monthData.monthKey) {
+      statements = optimisticSellerStatements.filteredStatements;
+    }
+
+    // Deduplicate statements with the same roleGroup by merging them
+    const deduplicated = new Map<string, SellerStatement>();
+    statements.forEach(stmt => {
+      const existing = deduplicated.get(stmt.roleGroup);
+      if (existing) {
+        // Merge: combine items and recalculate totals
+        const mergedItems = [...existing.items, ...stmt.items];
+        deduplicated.set(stmt.roleGroup, {
+          roleGroup: stmt.roleGroup,
+          items: mergedItems,
+          totalOtgComp: existing.totalOtgComp + stmt.totalOtgComp,
+          totalSellerComp: existing.totalSellerComp + stmt.totalSellerComp,
+        });
+      } else {
+        deduplicated.set(stmt.roleGroup, stmt);
+      }
+    });
+
+    return Array.from(deduplicated.values());
+  }, [monthData.monthKey, sellerStatementsForMonth, carrierStatementResult, optimisticSellerStatements]);
+
+  // Aggregate items by account for Account View
+  const accountSummariesByRoleGroup = useMemo(() => {
+    const summaries = new Map<string, Map<string, AccountSummary>>();
+    
+    sellerStatements.forEach(stmt => {
+      const accountMap = new Map<string, AccountSummary>();
+      
+      stmt.items.forEach(item => {
+        const accountKey = item.accountName || 'Unknown Account';
+        const existing = accountMap.get(accountKey);
+        
+        if (existing) {
+          existing.totalOtgComp += item.otgComp || 0;
+          existing.totalSellerComp += item.sellerComp || 0;
+          existing.itemCount += 1;
+          // Use first non-empty state/provider if current is empty
+          if (!existing.state && item.state) existing.state = item.state;
+          if (!existing.provider && item.provider) existing.provider = item.provider;
+        } else {
+          accountMap.set(accountKey, {
+            accountName: accountKey,
+            state: item.state || '',
+            provider: item.provider || '',
+            totalOtgComp: item.otgComp || 0,
+            totalSellerComp: item.sellerComp || 0,
+            itemCount: 1,
+          });
+        }
+      });
+      
+      summaries.set(stmt.roleGroup, accountMap);
+    });
+    
+    return summaries;
+  }, [sellerStatements]);
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      {/* Month Header - Always Visible */}
+      <div 
+        className="p-6 cursor-pointer hover:bg-slate-50 transition-colors"
+        onClick={onToggle}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            {isExpanded ? (
+              <ChevronUp className="text-indigo-600" size={20} />
+            ) : (
+              <ChevronDown className="text-indigo-600" size={20} />
+            )}
+            <div>
+              <h3 className="text-xl font-bold text-slate-800">{monthData.monthLabel}</h3>
+              <p className="text-sm text-slate-500 mt-1">Click to {isExpanded ? 'collapse' : 'expand'} seller statements</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`px-3 py-1 text-sm font-medium rounded-full ${statusColor}`}>
+              {statusBadge}
+            </span>
+          </div>
+        </div>
+        
+        {/* Carrier Status Grid - Always Visible */}
+        <div className="mt-4 pt-4 border-t border-slate-200">
+          <p className="text-xs font-medium text-slate-600 mb-2">Carrier Status:</p>
+          <div className="flex flex-wrap gap-2">
+            {allCarriers.map((carrier) => {
+              const statementId = monthData.carriers[carrier];
+              const statementIdStr = statementId ? String(statementId) : null;
+              const isUploaded = !!statementId && !pendingDeletions.has(String(statementId));
+              const isDeleting = deletingStatementId === statementId || pendingDeletions.has(String(statementId || ''));
+              const showConfirm = deleteConfirmStatementId === statementIdStr;
+              
+              return (
+                <div
+                  key={carrier}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs ${
+                    isUploaded
+                      ? 'bg-green-100 text-green-700'
+                      : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  {isUploaded ? (
+                    <CheckCircle size={12} />
+                  ) : (
+                    <XCircle size={12} />
+                  )}
+                  <span>{CARRIER_LABELS[carrier]}</span>
+                  {isUploaded && statementId && (
+                    <>
+                      {!showConfirm ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteConfirmStatementId(statementIdStr);
+                          }}
+                          className="ml-1 text-red-600 hover:text-red-700"
+                          title="Delete carrier statement"
+                          disabled={isDeleting}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      ) : (
+                        <div className="ml-1 flex items-center gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteCarrier(String(statementId), carrier, monthData.monthKey, sellerStatementsForMonth);
+                            }}
+                            className="text-xs text-red-700 font-medium"
+                            disabled={isDeleting}
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteConfirmStatementId(null);
+                            }}
+                            className="text-xs text-slate-500"
+                            disabled={isDeleting}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {isDeleting && <span className="text-xs text-slate-500 ml-1">Deleting...</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Seller Statements - Only Visible When Expanded */}
+      {isExpanded && (
+        <div className="border-t border-slate-200 bg-slate-50/50 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-lg font-semibold text-slate-700 flex items-center gap-2">
+              <User size={18} />
+              Seller Statements
+            </h4>
+            <div className="flex items-center gap-3">
+              {/* View Toggle */}
+              <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg p-1">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSellerStatementView('account');
+                  }}
+                  className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                    sellerStatementView === 'account'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  Account View
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSellerStatementView('line-item');
+                  }}
+                  className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                    sellerStatementView === 'line-item'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  Line Item View
+                </button>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRegenerate();
+                }}
+                disabled={isRegenerating}
+                className="px-3 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+                title="Regenerate seller statements from all carrier matches"
+              >
+                <RefreshCw size={14} className={isRegenerating ? 'animate-spin' : ''} />
+                {isRegenerating ? 'Generating...' : 'Regenerate'}
+              </button>
+            </div>
+          </div>
+          
+          {sellerStatements.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-xl p-8 text-center">
+              <p className="text-slate-500">No seller statements yet.</p>
+              <p className="text-sm text-slate-400 mt-2">
+                Upload carrier statements to generate commissions.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4">
+              {sellerStatements.map((stmt, idx) => {
+                const accountSummaries = accountSummariesByRoleGroup.get(stmt.roleGroup);
+                const accounts = accountSummaries ? Array.from(accountSummaries.values()) : [];
+                
+                return (
+                  <div key={`${stmt.roleGroup}-${idx}`} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                    <div 
+                      className="p-4 cursor-pointer hover:bg-slate-50 flex items-center justify-between"
+                      onClick={() => toggleRoleGroup(stmt.roleGroup)}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="h-8 w-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-700 font-bold text-sm">
+                          {stmt.roleGroup.charAt(0)}
+                        </div>
+                        <div>
+                          <h4 className="text-base font-bold text-slate-800">{stmt.roleGroup}</h4>
+                          <p className="text-xs text-slate-500">
+                            {sellerStatementView === 'account' 
+                              ? `${accounts.length} account${accounts.length !== 1 ? 's' : ''}`
+                              : `${stmt.items.length} billing item${stmt.items.length !== 1 ? 's' : ''}`
+                            }
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4">
+                        <div className="text-right">
+                          <p className="text-xs text-slate-400 uppercase font-medium">Seller Comp</p>
+                          <p className="text-lg font-bold text-indigo-600">{formatCurrency(stmt.totalSellerComp)}</p>
+                          <p className="text-xs text-slate-400 mt-0.5">OTG Comp: {formatCurrency(stmt.totalOtgComp)}</p>
+                        </div>
+                        {expandedRoleGroup === stmt.roleGroup ? <ChevronUp className="text-slate-400" size={18} /> : <ChevronDown className="text-slate-400" size={18} />}
+                      </div>
+                    </div>
+
+                    {expandedRoleGroup === stmt.roleGroup && (
+                      <div className="border-t border-slate-100 bg-slate-50/50 p-4">
+                        {sellerStatementView === 'account' ? (
+                          /* Account View */
+                          <table className="w-full text-sm text-left bg-white border border-slate-200 rounded-lg overflow-hidden">
+                            <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                              <tr>
+                                <th className="px-3 py-2 font-medium text-xs">State</th>
+                                <th className="px-3 py-2 font-medium text-xs">Account Name</th>
+                                <th className="px-3 py-2 font-medium text-xs">Provider</th>
+                                <th className="px-3 py-2 font-medium text-xs text-right">Line Items</th>
+                                <th className="px-3 py-2 font-medium text-xs text-right">OTG Comp $</th>
+                                <th className="px-3 py-2 font-medium text-xs text-right">Seller Comp $</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {accounts.map((account, accountIdx) => (
+                                <tr key={accountIdx} className="hover:bg-slate-50">
+                                  <td className="px-3 py-2 text-slate-600 text-xs">{account.state || '-'}</td>
+                                  <td className="px-3 py-2 text-slate-800 text-xs font-medium">{account.accountName}</td>
+                                  <td className="px-3 py-2 text-slate-600 text-xs">{account.provider || '-'}</td>
+                                  <td className="px-3 py-2 text-right text-slate-600 text-xs">{account.itemCount}</td>
+                                  <td className="px-3 py-2 text-right font-mono text-slate-600 text-xs">{formatCurrency(account.totalOtgComp)}</td>
+                                  <td className="px-3 py-2 text-right font-mono font-medium text-indigo-600 text-xs">{formatCurrency(account.totalSellerComp)}</td>
+                                </tr>
+                              ))}
+                              <tr className="bg-indigo-50/50 font-bold border-t border-indigo-100">
+                                <td colSpan={3} className="px-3 py-2 text-right text-indigo-900 text-xs">Totals:</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{stmt.items.length}</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalOtgComp)}</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalSellerComp)}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        ) : (
+                          /* Line Item View */
+                          <table className="w-full text-sm text-left bg-white border border-slate-200 rounded-lg overflow-hidden">
+                            <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                              <tr>
+                                <th className="px-3 py-2 font-medium text-xs">State</th>
+                                <th className="px-3 py-2 font-medium text-xs">OTG Comp Billing Item</th>
+                                <th className="px-3 py-2 font-medium text-xs">Account Name</th>
+                                <th className="px-3 py-2 font-medium text-xs">Provider</th>
+                                <th className="px-3 py-2 font-medium text-xs text-right">OTG Comp $</th>
+                                <th className="px-3 py-2 font-medium text-xs text-right">Seller Comp $</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {stmt.items.map((item, itemIdx) => (
+                                <tr key={itemIdx} className="hover:bg-slate-50">
+                                  <td className="px-3 py-2 text-slate-600 text-xs">{item.state || '-'}</td>
+                                  <td className="px-3 py-2 font-mono font-medium text-slate-800 text-xs">{item.otgCompBillingItem || '-'}</td>
+                                  <td className="px-3 py-2 text-slate-800 text-xs">{item.accountName}</td>
+                                  <td className="px-3 py-2 text-slate-600 text-xs">{item.provider || '-'}</td>
+                                  <td className="px-3 py-2 text-right font-mono text-slate-600 text-xs">{formatCurrency(item.otgComp)}</td>
+                                  <td className="px-3 py-2 text-right font-mono font-medium text-indigo-600 text-xs">{formatCurrency(item.sellerComp)}</td>
+                                </tr>
+                              ))}
+                              <tr className="bg-indigo-50/50 font-bold border-t border-indigo-100">
+                                <td colSpan={4} className="px-3 py-2 text-right text-indigo-900 text-xs">Totals:</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalOtgComp)}</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalSellerComp)}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResult }) => {
   const [expandedPerson, setExpandedPerson] = useState<string | null>(null);
   const [expandedRoleGroup, setExpandedRoleGroup] = useState<string | null>(null);
-  const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
+  const [expandedMonths, setExpandedMonths] = useState<Set<string>>(new Set());
   const [deletingStatementId, setDeletingStatementId] = useState<string | null>(null);
-  const [deleteConfirmCarrier, setDeleteConfirmCarrier] = useState<string | null>(null);
+  const [deleteConfirmStatementId, setDeleteConfirmStatementId] = useState<string | null>(null);
   // Track statements that are being deleted (optimistic UI updates)
   const [pendingDeletions, setPendingDeletions] = useState<Set<string>>(new Set());
   // Track optimistically filtered seller statements (for pending deletions)
@@ -50,28 +476,84 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     }));
   }, [processingMonthsRaw, pendingDeletions]);
   
-  const selectedMonth = useMemo(() => {
-    // If a month is explicitly selected, use it
-    if (selectedMonthKey) {
-      return selectedMonthKey;
-    }
-    // Otherwise, auto-select the first available month
-    if (processingMonths.length > 0) {
-      return processingMonths[0].monthKey;
-    }
-    // No months available yet
-    return null;
-  }, [selectedMonthKey, processingMonths]);
-
-  // Clear optimistic state when month changes
-  useEffect(() => {
-    if (optimisticSellerStatements && optimisticSellerStatements.monthKey !== selectedMonth) {
-      setOptimisticSellerStatements(null);
-    }
-  }, [selectedMonth, optimisticSellerStatements]);
+  // Generate months: January 2026 through June 2026
+  const generatedMonths = useMemo(() => {
+    return [
+      { monthKey: "2026-01", monthLabel: "January 2026" },
+      { monthKey: "2026-02", monthLabel: "February 2026" },
+      { monthKey: "2026-03", monthLabel: "March 2026" },
+      { monthKey: "2026-04", monthLabel: "April 2026" },
+      { monthKey: "2026-05", monthLabel: "May 2026" },
+      { monthKey: "2026-06", monthLabel: "June 2026" },
+    ];
+  }, []);
   
-  const sellerStatementsForMonth = useSellerStatements(selectedMonth);
-  const carrierStatementsForMonth = useCarrierStatements(selectedMonth);
+  // Merge generated months with Firebase processing months
+  // Use Firebase data if available, otherwise use generated structure
+  const allMonths = useMemo(() => {
+    const monthMap = new Map<string, {
+      monthKey: string;
+      monthLabel: string;
+      carriers: Record<string, string>;
+      status: 'complete' | 'partial' | 'empty';
+      lastProcessedAt?: number;
+    }>();
+    
+    // Add generated months first (with empty structure)
+    generatedMonths.forEach(month => {
+      monthMap.set(month.monthKey, {
+        monthKey: month.monthKey,
+        monthLabel: month.monthLabel,
+        carriers: {},
+        status: 'empty',
+      });
+    });
+    
+    // Merge Firebase processing months (overwrite with real data if available)
+    processingMonths.forEach(month => {
+      if (monthMap.has(month.monthKey)) {
+        // Update existing month with Firebase data
+        const existing = monthMap.get(month.monthKey)!;
+        monthMap.set(month.monthKey, {
+          ...existing,
+          carriers: month.carriers,
+          status: month.status,
+          lastProcessedAt: month.lastProcessedAt,
+        });
+      } else {
+        // Add Firebase month if outside Jan-Jun range (optional - can filter out)
+        monthMap.set(month.monthKey, month);
+      }
+    });
+    
+    // Return sorted array (Jan-Jun first, then others)
+    return Array.from(monthMap.values()).sort((a, b) => {
+      // Jan-Jun 2026 first
+      if (a.monthKey >= "2026-01" && a.monthKey <= "2026-06" &&
+          b.monthKey >= "2026-01" && b.monthKey <= "2026-06") {
+        return a.monthKey.localeCompare(b.monthKey);
+      }
+      if (a.monthKey >= "2026-01" && a.monthKey <= "2026-06") return -1;
+      if (b.monthKey >= "2026-01" && b.monthKey <= "2026-06") return 1;
+      return b.monthKey.localeCompare(a.monthKey);
+    });
+  }, [generatedMonths, processingMonths]);
+  
+  // Toggle month expansion
+  const toggleMonthExpansion = (monthKey: string) => {
+    setExpandedMonths(prev => {
+      const next = new Set(prev);
+      if (next.has(monthKey)) {
+        next.delete(monthKey);
+      } else {
+        next.add(monthKey);
+      }
+      return next;
+    });
+  };
+
+  // Clear optimistic state when month changes (no longer needed with new structure)
+  // Keep for backward compatibility with deletion logic
   const deleteCarrierStatement = useDeleteCarrierStatement();
   const regenerateSellerStatements = useRegenerateSellerStatements();
   const removeItemsFromSellerStatements = useRemoveItemsFromSellerStatements();
@@ -91,23 +573,21 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
   }, []);
   
   /**
-   * Manually regenerate seller statements for the selected month
+   * Manually regenerate seller statements for a specific month
    */
-  const handleRegenerateSellerStatements = async () => {
-    if (!selectedMonth) {
-      alert('Please select a processing month first');
-      return;
-    }
+  const handleRegenerateSellerStatements = async (monthKey: string) => {
+    const monthData = allMonths.find(m => m.monthKey === monthKey);
+    const monthLabel = monthData?.monthLabel || monthKey;
     
-    if (!confirm(`Regenerate seller statements for ${selectedMonth}? This will process all matches from all carriers and regenerate seller statements.`)) {
+    if (!confirm(`Regenerate seller statements for ${monthLabel}? This will process all matches from all carriers and regenerate seller statements.`)) {
       return;
     }
     
     try {
       setIsRegenerating(true);
-      console.log(`[Reports] Manual regeneration triggered for month: ${selectedMonth}`);
+      console.log(`[Reports] Manual regeneration triggered for month: ${monthKey}`);
       
-      const result = await regenerateSellerStatements(selectedMonth);
+      const result = await regenerateSellerStatements(monthKey);
       
       console.log(`[Reports] Regeneration complete`);
       console.log(`[Reports] Total matches processed: ${result.matchedRowsCount}`);
@@ -130,7 +610,7 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
    * Handle deleting a carrier statement from the Commissions tab
    * Uses optimistic UI updates - removes from UI immediately, then deletes in background
    */
-  const handleDeleteCarrier = async (statementId: string, carrier: string, processingMonth: string) => {
+  const handleDeleteCarrier = async (statementId: string, carrier: string, processingMonth: string, sellerStatementsForMonth?: SellerStatement[]) => {
     if (!confirm(`Are you sure you want to delete the ${CARRIER_LABELS[carrier as CarrierType]} statement? This will remove all matches and regenerate seller statements.`)) {
       return;
     }
@@ -138,7 +618,7 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     // Optimistic UI update: immediately remove carrier statement from display
     setPendingDeletions(prev => new Set(prev).add(statementId));
     setDeletingStatementId(statementId);
-    setDeleteConfirmCarrier(null);
+    setDeleteConfirmStatementId(null);
     
     // Fetch matches for this statement to optimistically filter seller statements
     let matchesToRemove: any[] = [];
@@ -163,7 +643,7 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
 
     // Optimistically filter seller statements
     if (itemsToRemove.size > 0 && sellerStatementsForMonth && sellerStatementsForMonth.length > 0) {
-      const filteredStatements = sellerStatementsForMonth.map(stmt => {
+      const filteredStatements = sellerStatementsForMonth.map((stmt: SellerStatement) => {
         // Filter out items that match the deleted statement's matches
         const filteredItems = stmt.items.filter(item => {
           const key = `${item.otgCompBillingItem}|${item.accountName}`;
@@ -306,77 +786,8 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     return Object.values(grouped).sort((a, b) => b.totalCommission - a.totalCommission);
   }, [analysisResult]);
 
-  // Get seller statements from Firebase or fallback to local result
-  // Apply optimistic filtering for pending deletions
-  // Deduplicate statements with the same roleGroup (merge items and totals)
-  const sellerStatements: SellerStatement[] = useMemo(() => {
-    let statements: SellerStatement[] = [];
-    
-    if (sellerStatementsForMonth && sellerStatementsForMonth.length > 0) {
-      statements = sellerStatementsForMonth.map(stmt => ({
-        roleGroup: stmt.roleGroup,
-        items: stmt.items,
-        totalOtgComp: stmt.totalOtgComp,
-        totalSellerComp: stmt.totalSellerComp,
-      }));
-    } else if (carrierStatementResult) {
-      // Fallback to local result if Firebase data not available
-      statements = carrierStatementResult.sellerStatements;
-    }
-
-    // Apply optimistic filtering if we have a pending deletion for this month
-    if (optimisticSellerStatements && optimisticSellerStatements.monthKey === selectedMonth) {
-      statements = optimisticSellerStatements.filteredStatements;
-    }
-
-    // Deduplicate statements with the same roleGroup by merging them
-    const deduplicated = new Map<string, SellerStatement>();
-    statements.forEach(stmt => {
-      const existing = deduplicated.get(stmt.roleGroup);
-      if (existing) {
-        // Merge: combine items and recalculate totals
-        const mergedItems = [...existing.items, ...stmt.items];
-        deduplicated.set(stmt.roleGroup, {
-          roleGroup: stmt.roleGroup,
-          items: mergedItems,
-          totalOtgComp: existing.totalOtgComp + stmt.totalOtgComp,
-          totalSellerComp: existing.totalSellerComp + stmt.totalSellerComp,
-        });
-      } else {
-        deduplicated.set(stmt.roleGroup, stmt);
-      }
-    });
-
-    return Array.from(deduplicated.values());
-  }, [selectedMonth, sellerStatementsForMonth, carrierStatementResult, optimisticSellerStatements]);
-
-  // Get current month data
-  const currentMonthData = useMemo(() => {
-    if (!selectedMonth) return null;
-    return processingMonths.find(m => m.monthKey === selectedMonth);
-  }, [selectedMonth, processingMonths]);
-
-  // Get missing carriers for selected month
-  const missingCarriersInfo = useMemo(() => {
-    if (!currentMonthData) return null;
-    
-    const allCarriers: CarrierType[] = ['GoTo', 'Lumen', 'MetTel', 'TBO', 'Zayo', 'Allstream'];
-    const uploadedCarriers = Object.keys(currentMonthData.carriers).filter(Boolean) as CarrierType[];
-    const missing = allCarriers.filter(c => !uploadedCarriers.includes(c));
-    
-    if (missing.length === 0) return null;
-    
-    return {
-      monthLabel: currentMonthData.monthLabel,
-      missingCarriers: missing,
-      uploadedCarriers,
-    };
-  }, [currentMonthData]);
-
-  const hasPartialProcessing = currentMonthData?.status === 'partial';
-
   // Check if we have data from Firebase or local state
-  const hasData = analysisResult || carrierStatementResult || (sellerStatements.length > 0) || (processingMonths.length > 0);
+  const hasData = analysisResult || carrierStatementResult || (allMonths.length > 0);
 
   if (!hasData) {
     return (
@@ -388,16 +799,6 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     );
   }
 
-  // If no month is selected but we have months, show message
-  if (processingMonths.length > 0 && !selectedMonth) {
-    return (
-      <div className="flex flex-col items-center justify-center h-96 text-slate-400">
-        <Calendar size={48} className="mb-4 opacity-20" />
-        <p className="text-lg">Select a processing month to view commissions.</p>
-        <p className="text-sm">Use the month selector above to choose a month.</p>
-      </div>
-    );
-  }
 
   const toggleExpand = (name: string) => {
     setExpandedPerson(expandedPerson === name ? null : name);
@@ -418,257 +819,45 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
         <p className="text-slate-500 mt-1">Monthly commission statements per salesperson and role group.</p>
       </div>
 
-      {/* Month Selector */}
-      {processingMonths.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="flex items-center gap-3 mb-3">
-            <Calendar className="text-indigo-600" size={20} />
-            <label className="text-sm font-medium text-slate-700">Processing Month:</label>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {processingMonths.map((month) => (
-              <button
-                key={month.monthKey}
-                onClick={() => setSelectedMonthKey(month.monthKey)}
-                className={`px-4 py-2 rounded-lg border transition-all ${
-                  selectedMonth === month.monthKey
-                    ? 'bg-indigo-600 text-white border-indigo-600'
-                    : 'bg-white text-slate-700 border-slate-300 hover:border-indigo-400 hover:bg-indigo-50'
-                }`}
-              >
-                {month.monthLabel}
-                {month.status === 'complete' && (
-                  <CheckCircle className="inline ml-2" size={14} />
-                )}
-                {month.status === 'partial' && (
-                  <span className="ml-2 text-xs opacity-75">({Object.keys(month.carriers).length}/6)</span>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Month Header */}
-      {currentMonthData && (
-        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border-2 border-indigo-200 rounded-xl p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-2xl font-bold text-indigo-900 mb-2">
-                {currentMonthData.monthLabel}
-              </h3>
-              <p className="text-sm text-indigo-700">
-                Commission statements for this processing month
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleRegenerateSellerStatements}
-                disabled={isRegenerating}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
-                title="Regenerate seller statements from all carrier matches"
-              >
-                <RefreshCw size={16} className={isRegenerating ? 'animate-spin' : ''} />
-                {isRegenerating ? 'Generating...' : 'Regenerate'}
-              </button>
-              {currentMonthData.status === 'complete' && (
-                <span className="px-3 py-1 bg-green-100 text-green-700 text-sm font-medium rounded-full flex items-center gap-1">
-                  <CheckCircle size={14} />
-                  Complete
-                </span>
-              )}
-              {currentMonthData.status === 'partial' && (
-                <span className="px-3 py-1 bg-amber-100 text-amber-700 text-sm font-medium rounded-full">
-                  Partial ({Object.keys(currentMonthData.carriers).length}/6 carriers)
-                </span>
-              )}
-            </div>
-          </div>
+      {/* Expandable Month Sections */}
+      <div className="space-y-4">
+        {allMonths.map((monthData) => {
+          const isExpanded = expandedMonths.has(monthData.monthKey);
+          const allCarriers: CarrierType[] = ['GoTo', 'Lumen', 'MetTel', 'TBO', 'Zayo', 'Allstream'];
+          const uploadedCarriers = Object.keys(monthData.carriers).filter(Boolean) as CarrierType[];
+          const uploadedCount = uploadedCarriers.length;
+          const statusBadge = monthData.status === 'complete' ? 'Complete' : 
+                             monthData.status === 'partial' ? `Partial (${uploadedCount}/6)` : 
+                             'Empty';
+          const statusColor = monthData.status === 'complete' ? 'bg-green-100 text-green-700' :
+                             monthData.status === 'partial' ? 'bg-amber-100 text-amber-700' :
+                             'bg-slate-100 text-slate-500';
           
-          {/* Carrier Status */}
-          <div className="mt-4 pt-4 border-t border-indigo-200">
-            <p className="text-xs font-medium text-indigo-600 mb-2">Carrier Status:</p>
-            <div className="flex flex-wrap gap-2">
-              {(['GoTo', 'Lumen', 'MetTel', 'TBO', 'Zayo', 'Allstream'] as CarrierType[]).map((carrier) => {
-                const statementId = currentMonthData.carriers[carrier];
-                const isUploaded = !!statementId && !pendingDeletions.has(String(statementId));
-                const isDeleting = deletingStatementId === statementId || pendingDeletions.has(String(statementId || ''));
-                const showConfirm = deleteConfirmCarrier === carrier;
-                
-                return (
-                  <div
-                    key={carrier}
-                    className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs ${
-                      isUploaded
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-slate-100 text-slate-500'
-                    }`}
-                  >
-                    {isUploaded ? (
-                      <CheckCircle size={12} />
-                    ) : (
-                      <XCircle size={12} />
-                    )}
-                    <span>{CARRIER_LABELS[carrier]}</span>
-                    {isUploaded && statementId && selectedMonth && (
-                      <>
-                        {!showConfirm ? (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeleteConfirmCarrier(carrier);
-                            }}
-                            className="ml-1 text-red-600 hover:text-red-700"
-                            title="Delete carrier statement"
-                            disabled={isDeleting}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        ) : (
-                          <div className="ml-1 flex items-center gap-1">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteCarrier(String(statementId), carrier, selectedMonth);
-                              }}
-                              className="text-xs text-red-700 font-medium"
-                              disabled={isDeleting}
-                            >
-                              Confirm
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDeleteConfirmCarrier(null);
-                              }}
-                              className="text-xs text-slate-500"
-                              disabled={isDeleting}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    )}
-                    {isDeleting && <span className="text-xs text-slate-500 ml-1">Deleting...</span>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Partial Processing Warning */}
-      {hasPartialProcessing && missingCarriersInfo && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
-          <AlertTriangle className="text-amber-600 flex-shrink-0 mt-0.5" size={20} />
-          <div className="flex-1">
-            <p className="text-sm font-medium text-amber-900">
-              Partial Processing Detected
-            </p>
-            <p className="text-xs text-amber-700 mt-1">
-              Seller statements for <strong>{missingCarriersInfo.monthLabel}</strong> are based on partial data.
-              Missing carriers: {missingCarriersInfo.missingCarriers.map(c => CARRIER_LABELS[c]).join(', ')}.
-              Totals shown are only for uploaded carriers ({missingCarriersInfo.uploadedCarriers.map(c => CARRIER_LABELS[c]).join(', ')}).
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Seller Statements (Carrier Statement Processing) */}
-      {selectedMonth && (
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-slate-700 flex items-center gap-2">
-            <User size={20} />
-            Seller Statements
-            {currentMonthData && (
-              <span className="text-sm font-normal text-slate-500">
-                ({currentMonthData.monthLabel})
-              </span>
-            )}
-            {hasPartialProcessing && (
-              <span className="ml-2 px-2 py-1 bg-amber-100 text-amber-700 text-xs font-medium rounded">
-                Partial
-              </span>
-            )}
-          </h3>
-          {sellerStatements.length === 0 ? (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-8 text-center">
-              <p className="text-slate-500">No seller statements found for this month.</p>
-              <p className="text-sm text-slate-400 mt-2">
-                {currentMonthData?.status === 'partial' 
-                  ? 'Upload more carrier statements to generate seller statements.'
-                  : 'Process carrier statements to generate seller statements.'}
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-6">
-              {sellerStatements.map((stmt, idx) => (
-                <div key={`${stmt.roleGroup}-${idx}`} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden transition-all">
-                  <div 
-                    className="p-6 cursor-pointer hover:bg-slate-50 flex items-center justify-between"
-                    onClick={() => toggleRoleGroup(stmt.roleGroup)}
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="h-10 w-10 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-700 font-bold">
-                        {stmt.roleGroup.charAt(0)}
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-bold text-slate-800">{stmt.roleGroup}</h3>
-                        <p className="text-sm text-slate-500">{stmt.items.length} billing items</p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-6">
-                      <div className="text-right">
-                        <p className="text-xs text-slate-400 uppercase font-medium">Seller Comp</p>
-                        <p className="text-xl font-bold text-indigo-600">${stmt.totalSellerComp.toFixed(2)}</p>
-                        <p className="text-xs text-slate-400 mt-1">OTG Comp: ${stmt.totalOtgComp.toFixed(2)}</p>
-                      </div>
-                      {expandedRoleGroup === stmt.roleGroup ? <ChevronUp className="text-slate-400" /> : <ChevronDown className="text-slate-400" />}
-                    </div>
-                  </div>
-
-                  {expandedRoleGroup === stmt.roleGroup && (
-                    <div className="border-t border-slate-100 bg-slate-50/50 p-6 animate-fade-in">
-                      <table className="w-full text-sm text-left bg-white border border-slate-200 rounded-lg overflow-hidden">
-                        <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
-                          <tr>
-                            <th className="px-4 py-2 font-medium">State</th>
-                            <th className="px-4 py-2 font-medium">OTG Comp Billing Item</th>
-                            <th className="px-4 py-2 font-medium">Account Name</th>
-                            <th className="px-4 py-2 font-medium">Provider</th>
-                            <th className="px-4 py-2 font-medium text-right">OTG Comp $</th>
-                            <th className="px-4 py-2 font-medium text-right">Seller Comp $</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {stmt.items.map((item, idx) => (
-                            <tr key={idx} className="hover:bg-slate-50">
-                              <td className="px-4 py-2 text-slate-600">{item.state || '-'}</td>
-                              <td className="px-4 py-2 font-mono font-medium text-slate-800">{item.otgCompBillingItem || '-'}</td>
-                              <td className="px-4 py-2 text-slate-800">{item.accountName}</td>
-                              <td className="px-4 py-2 text-slate-600">{item.provider || '-'}</td>
-                              <td className="px-4 py-2 text-right font-mono text-slate-600">${item.otgComp.toFixed(2)}</td>
-                              <td className="px-4 py-2 text-right font-mono font-medium text-indigo-600">${item.sellerComp.toFixed(2)}</td>
-                            </tr>
-                          ))}
-                          <tr className="bg-indigo-50/50 font-bold border-t border-indigo-100">
-                            <td colSpan={4} className="px-4 py-3 text-right text-indigo-900">Totals:</td>
-                            <td className="px-4 py-3 text-right text-indigo-700">${stmt.totalOtgComp.toFixed(2)}</td>
-                            <td className="px-4 py-3 text-right text-indigo-700">${stmt.totalSellerComp.toFixed(2)}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+          return (
+            <MonthSection
+              key={monthData.monthKey}
+              monthData={monthData}
+              isExpanded={isExpanded}
+              onToggle={() => toggleMonthExpansion(monthData.monthKey)}
+              statusBadge={statusBadge}
+              statusColor={statusColor}
+              allCarriers={allCarriers}
+              uploadedCarriers={uploadedCarriers}
+              pendingDeletions={pendingDeletions}
+              deletingStatementId={deletingStatementId}
+              deleteConfirmStatementId={deleteConfirmStatementId}
+              setDeleteConfirmStatementId={setDeleteConfirmStatementId}
+              onDeleteCarrier={handleDeleteCarrier}
+              onRegenerate={() => handleRegenerateSellerStatements(monthData.monthKey)}
+              isRegenerating={isRegenerating}
+              carrierStatementResult={carrierStatementResult}
+              optimisticSellerStatements={optimisticSellerStatements}
+              expandedRoleGroup={expandedRoleGroup}
+              toggleRoleGroup={toggleRoleGroup}
+            />
+          );
+        })}
+      </div>
 
       {/* Vendor Statement Commissions */}
       {statements.length > 0 && (
@@ -697,7 +886,7 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
               <div className="flex items-center gap-6">
                 <div className="text-right">
                   <p className="text-xs text-slate-400 uppercase font-medium">Total Payout</p>
-                  <p className="text-xl font-bold text-indigo-600">${stmt.totalCommission.toFixed(2)}</p>
+                  <p className="text-xl font-bold text-indigo-600">{formatCurrency(stmt.totalCommission)}</p>
                 </div>
                 {expandedPerson === stmt.salesperson ? <ChevronUp className="text-slate-400" /> : <ChevronDown className="text-slate-400" />}
               </div>
@@ -729,13 +918,13 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
                         <td className="px-4 py-2 text-slate-600">{item.date}</td>
                         <td className="px-4 py-2 font-medium text-slate-800">{item.clientName}</td>
                         <td className="px-4 py-2 text-slate-600 truncate max-w-xs">{item.serviceDescription}</td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-600">${item.amountReceived.toFixed(2)}</td>
-                        <td className="px-4 py-2 text-right font-mono font-medium text-indigo-600">${item.commissionAmount.toFixed(2)}</td>
+                        <td className="px-4 py-2 text-right font-mono text-slate-600">{formatCurrency(item.amountReceived)}</td>
+                        <td className="px-4 py-2 text-right font-mono font-medium text-indigo-600">{formatCurrency(item.commissionAmount)}</td>
                       </tr>
                     ))}
                     <tr className="bg-indigo-50/50 font-bold border-t border-indigo-100">
                       <td colSpan={4} className="px-4 py-3 text-right text-indigo-900">Total Payout:</td>
-                      <td className="px-4 py-3 text-right text-indigo-700">${stmt.totalCommission.toFixed(2)}</td>
+                      <td className="px-4 py-3 text-right text-indigo-700">{formatCurrency(stmt.totalCommission)}</td>
                     </tr>
                   </tbody>
                 </table>
