@@ -27,6 +27,15 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 - Standard fields: `clientName`, `serviceType`, `salesperson`, `expectedAmount`, `splitPercentage`
 - Custom fields supported
 - Export to CSV
+- **CSV Analysis**: Analyze CSV files with Gemini AI to identify essential columns, data quality issues, and cleaning suggestions
+
+#### 1b. Master Data 2 (`MasterDataList2`)
+- **Full Column Display**: Shows all 62 columns from the reformatted OTG.0 Comp Key CSV
+- Same account-level grouping as Master Data
+- Dynamic column rendering in account detail modals (all columns visible)
+- Auto-loads reformatted CSV on mount
+- Export functionality for complete dataset
+- Uses reformatted CSV file with proper column ordering
 
 #### 2. Upload Statement (`Dashboard`)
 - Drag-and-drop file upload for monthly commission statements
@@ -75,6 +84,14 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 3. User can add/edit/delete records
 4. Custom columns can be added
 5. Export to CSV for backup
+6. **CSV Analysis**: Use Gemini AI to analyze CSV structure, identify data quality issues, and get cleaning suggestions
+7. **CSV Cleaning**: Apply AI-suggested cleaning operations (remove duplicates, normalize values, fix data types)
+
+#### Master Data 2 (Full Column View)
+1. Auto-loads reformatted CSV with all 62 columns
+2. View complete dataset with all columns visible
+3. Account-level grouping with full column details in modals
+4. Export complete dataset with all columns
 
 ## Architecture Decisions
 
@@ -93,9 +110,10 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 
 ### State Management
 - React hooks (`useCarrierStatements`, `useSellerStatements`, etc.) provide real-time data
-- Firebase handles persistence and synchronization
+- Firebase handles persistence and synchronization for carrier statements, matches, and seller statements
 - Component-level state for UI interactions
-- Master data still stored in component state (future: migrate to Firestore)
+- Master data stored in component state (Master Data 2 uses reformatted CSV with all columns)
+- Future: Migrate master data to Firestore for persistence
 
 ## Current Limitations
 

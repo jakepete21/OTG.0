@@ -1,8 +1,8 @@
 # API Documentation
 
-## Current State: Client-Side Services
+## Current State: Client-Side Services + Firebase Backend
 
-Currently, all "API" calls are client-side service functions. No backend exists.
+Most "API" calls are client-side service functions. Firebase (Firestore + Cloud Storage) provides backend persistence for carrier statements, matches, and seller statements. Master data is currently stored in component state.
 
 ## Service Layer
 
@@ -55,6 +55,73 @@ Loads the default OTG.0 Comp Key CSV file as raw data for import.
 **Used by**: MasterDataList "Load Default Data" button
 
 **Error Handling**: Throws descriptive errors for network failures, empty files, or invalid CSV format
+
+### `services/reformattedMasterData.ts`
+
+#### `loadReformattedMasterData(): Promise<any[]>`
+Loads the reformatted OTG.0 Comp Key CSV file with all 62 columns properly ordered.
+
+**Input**: None (reads from `/public/OTG.0 Comp Key AFTER 07_2025 - NEW Comp Key - 20260115_160812_REFORMATTED.csv`)
+
+**Output**: Raw data array with all columns in correct order
+
+**Features**:
+- Loads reformatted CSV with single-line headers
+- All 62 columns preserved and properly ordered
+- Normalizes column names
+- Filters out empty rows
+
+**Used by**: MasterDataList2 component (auto-loads on mount)
+
+### `services/csvAnalysisService.ts`
+
+#### `analyzeMasterDataCSV(csvContent: string, headers: string[], sampleRows: any[]): Promise<CSVAnalysis>`
+Uses Gemini AI to analyze CSV structure and provide insights.
+
+**Input**:
+- `csvContent`: Full CSV content as string
+- `headers`: Array of CSV header names
+- `sampleRows`: Sample data rows (first 10-20 rows)
+
+**Output**: `CSVAnalysis` object containing:
+- Essential columns (critical for matching/calculations)
+- Optional columns (nice-to-have)
+- Data quality issues (missing values, inconsistencies, errors)
+- Column mapping to MasterRecord structure
+- Cleaning suggestions (operations to perform)
+- Duplicate detection strategy
+- Data normalization recommendations
+- Summary
+
+**Features**:
+- Uses Gemini 2.5 Flash for fast, cost-effective analysis
+- Structured output via JSON schema
+- Identifies essential vs optional columns
+- Detects data quality problems
+- Suggests cleaning operations
+
+**Used by**: MasterDataList CSV analysis feature
+
+### `services/csvCleaningService.ts`
+
+#### `cleanMasterDataCSV(csvData: any[], analysis: CSVAnalysis): Promise<MasterRecord[]>`
+Cleans CSV data based on Gemini analysis results.
+
+**Input**:
+- `csvData`: Raw CSV data as array of objects
+- `analysis`: CSVAnalysis results from Gemini
+
+**Output**: Cleaned MasterRecord array
+
+**Features**:
+- Removes empty rows
+- Applies data normalization based on analysis examples
+- Fixes data types (currency, percentages)
+- Removes duplicates using Account **CARRIER** + OTG Comp Billing item
+- Converts cleaned data to MasterRecord format
+- Filters out records missing essential fields
+
+**Used by**: MasterDataList CSV cleaning and import feature
 
 ### `services/monthDetection.ts`
 
@@ -292,6 +359,71 @@ Main pipeline function that orchestrates the full carrier statement processing w
 5. Generate summary
 
 **Used by**: Dashboard component
+
+### `services/firebaseClient.ts`
+
+Firebase initialization and configuration.
+
+**Exports**:
+- `db`: Firestore database instance
+- `storage`: Firebase Cloud Storage instance
+- `auth`: Firebase Auth instance
+
+**Used by**: All Firebase service modules
+
+### `services/firebaseQueries.ts`
+
+Firebase read operations (queries).
+
+#### `getCarrierStatements(processingMonth?: string): Promise<CarrierStatement[]>`
+Get all carrier statements, optionally filtered by processing month.
+
+#### `getCarrierStatementById(id: string): Promise<CarrierStatement | null>`
+Get a single carrier statement by ID.
+
+#### `getSellerStatements(processingMonth: string): Promise<SellerStatement[]>`
+Get seller statements for a processing month.
+
+#### `getFileUrl(filePathOrUrl: string): Promise<string>`
+Get download URL for a file from Cloud Storage.
+
+**Used by**: Firebase hooks, components
+
+### `services/firebaseMutations.ts`
+
+Firebase write operations (mutations).
+
+#### `uploadCarrierStatement(file: File, metadata: CarrierStatementMetadata): Promise<string>`
+Upload carrier statement file to Cloud Storage and store metadata in Firestore.
+
+#### `storeMatches(matches: MatchedRow[], processingMonth: string, carrierStatementId: string): Promise<void>`
+Store matched rows in Firestore (batched writes).
+
+#### `regenerateSellerStatements(processingMonth: string): Promise<void>`
+Regenerate seller statements from all matches for a processing month.
+
+#### `deleteCarrierStatement(id: string): Promise<void>`
+Delete carrier statement, associated matches, file, and regenerate seller statements.
+
+**Used by**: Dashboard component, Reports component
+
+### `services/firebaseHooks.ts`
+
+React hooks for Firebase real-time data.
+
+#### `useCarrierStatements(processingMonth?: string): CarrierStatement[]`
+Real-time hook for carrier statements.
+
+#### `useSellerStatements(processingMonth: string): SellerStatement[]`
+Real-time hook for seller statements.
+
+#### `useProcessingMonths(): ProcessingMonthData[]`
+Derive processing months from carrier statements.
+
+#### `useCarrierStatementById(id: string): CarrierStatement | null`
+Real-time hook for single carrier statement.
+
+**Used by**: Components for real-time data display
 
 ## Future Backend API (If Migrating to Next.js + Supabase)
 

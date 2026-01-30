@@ -1,8 +1,12 @@
 # Data Schema
 
-## Current State (Client-Side Only)
+## Current State (Hybrid: Component State + Firebase)
 
-Currently, all data exists only in React component state. No database or persistent storage.
+- **Master Data**: Stored in React component state (not persisted to database)
+- **Carrier Statements**: Stored in Firebase Firestore + Cloud Storage
+- **Matches**: Stored in Firebase Firestore
+- **Seller Statements**: Stored in Firebase Firestore
+- **Processing Months**: Derived from carrier statements in Firestore
 
 ## TypeScript Types
 
