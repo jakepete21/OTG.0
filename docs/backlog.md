@@ -37,24 +37,13 @@ Acceptance:
 - Reorder Master Data Columns to Match CSV Header Order (2025-01-15) - Reordered all 62 columns to match exact CSV header sequence
 - Build Carrier Statement Processing & Dispute Detection Automation (2025-01-15) - Attempted full automation integration (needs to be broken down further)
 - Carrier Statement Upload & Processing with Master Data Matching (2025-01-15) - Implemented carrier statement upload, auto-detection, extraction, matching, and partial processing (partially complete, needs backend integration)
-
-### ✅ Completed Slices
-- Master data management (CRUD, import, export)
-- Statement processing (upload, AI analysis, display)
-- Commission reports (grouped by salesperson)
-- PDF Export for Reports (2024-01-15) - Added jsPDF integration, formatted PDF export with tables and totals
-- Rebrand from CommiSure to OTG.0 (2024-01-15) - Updated all branding to OTG.0 throughout app
-- Restructure UI Navigation for Monthly Automation Workflow (2024-01-15) - Updated navigation to Master Data, Upload Statement, Disputes, Commissions
-- Import OTG.0 Comp Key CSV as Master Data (2025-01-15) - Added "Load Default Data" button to import OTG.0 Comp Key CSV file, handles multi-line headers and complex column mappings
-- Implement Monday.com-Style Board/Sheet Layout for Master Data (2025-01-15) - Redesigned Master Data with Monday.com-style grid layout, auto-loads CSV data on mount, sticky headers, smooth scrolling
-- Reorder Master Data Columns to Match CSV Header Order (2025-01-15) - Reordered all 62 columns to match exact CSV header sequence
-- Build Carrier Statement Processing & Dispute Detection Automation (2025-01-15) - Attempted full automation integration (needs to be broken down further)
-- Carrier Statement Upload & Processing with Master Data Matching (2025-01-15) - Implemented carrier statement upload, auto-detection, extraction, matching, and partial processing (partially complete, needs backend integration)
 - Fix Missing Convex Query Error in Dashboard (2026-01-26) - Removed unused `getMatchedRowsForRegeneration` query hook that was causing console errors
 - Fix Convex Read Limit Error in regenerateSellerStatements Mutation (2026-01-26) - Implemented byte tracking and continuation pattern to handle large datasets without hitting 16MB read limit
 - Rebuild and Simplify Convex Backend (2026-01-26) - Simplified backend to core functionality: upload, delete, process seller statements
 - Migrate from Convex to Firebase Backend (2026-01-28) - Successfully migrated to Firebase Firestore + Cloud Storage, removed all Convex code
 - Fix Firebase Setup and Verify Backend Works (2026-01-28) - Installed Firebase dependencies, verified configuration, tested upload/delete operations
+- Add New Accounts and Line Items to Master Data 2 (2026-01-30) - Added "Add New Account" modal in MasterDataList2 and "Add Line Item" functionality in AccountDetailsModal, with validation for required fields
+- Google Sheets Sync for Comp Key (2026-01-30) - Added Sync Test tab for syncing Google Sheet data to Firebase database, preserves all columns and column order, maintains account/line item structure
 - Clean Up Master Data CSV and Import to Firebase (2026-01-28) - Added CSV analysis and cleaning services using Gemini, created Master Data 2 tab with all 62 columns, implemented CSV reformatting script
 - Switch Statement Processing to Use Master Data 2 (2026-01-30) - Updated App.tsx and Dashboard.tsx to use masterData2, implemented Master Data 2 persistence in Firebase, added optimistic UI updates for deletions, optimized duplicate detection and seller statement updates
 - Update Commissions Tab to Show Expandable Months Jan-Jun 2026 with Carrier Status (2026-01-30) - Restructured Commissions tab to show 6 months as expandable accordion sections, each showing carrier status and seller statements when expanded
