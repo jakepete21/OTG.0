@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { X, Edit2, Trash2, Save, FileText, DollarSign, ChevronDown, ChevronUp, Bug } from 'lucide-react';
+import { X, Edit2, Trash2, Save, FileText, DollarSign, ChevronDown, ChevronUp, Bug, Plus } from 'lucide-react';
 import { MasterRecord } from '../types';
 import { AccountGroup } from '../services/accountGrouping';
 import { formatNumber, formatCurrency, formatWholeNumber } from '../services/numberFormat';
@@ -29,6 +29,11 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<MasterRecord>>({});
   const [expandedCell, setExpandedCell] = useState<{ recordId: string; field: string } | null>(null);
+  
+  // Add Line Item State
+  const [isAddingLineItem, setIsAddingLineItem] = useState(false);
+  const [newLineItemForm, setNewLineItemForm] = useState<Partial<MasterRecord>>({});
+  const [addLineItemErrors, setAddLineItemErrors] = useState<Record<string, string>>({});
 
   const handleEditClick = useCallback((record: MasterRecord) => {
     setEditingId(record.id);
@@ -63,6 +68,66 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
       onUpdate(updatedRecords);
     }
   }, [allRecords, onUpdate]);
+
+  // Handle Add Line Item
+  const handleAddLineItem = useCallback(() => {
+    setIsAddingLineItem(true);
+    // Pre-fill Account **CARRIER** and OTG Comp Billing item from account
+    const preFilledForm: Partial<MasterRecord> = {
+      'Account **CARRIER**': account.accountCarrier,
+      'OTG Comp Billing item': account.otgCompBillingItem,
+      clientName: account.accountCarrier,
+      otgCompBillingItem: account.otgCompBillingItem,
+    };
+    setNewLineItemForm(preFilledForm);
+    setAddLineItemErrors({});
+  }, [account]);
+
+  const handleCancelAddLineItem = useCallback(() => {
+    setIsAddingLineItem(false);
+    setNewLineItemForm({});
+    setAddLineItemErrors({});
+  }, []);
+
+  const handleSaveNewLineItem = useCallback(() => {
+    // Validate required fields (should already be pre-filled, but check anyway)
+    const errors: Record<string, string> = {};
+    const accountCarrier = newLineItemForm['Account **CARRIER**'] || newLineItemForm.clientName || account.accountCarrier;
+    const otgCompBillingItem = newLineItemForm['OTG Comp Billing item'] || newLineItemForm.otgCompBillingItem || account.otgCompBillingItem;
+
+    if (!accountCarrier.trim()) {
+      errors.accountCarrier = 'Account **CARRIER** is required';
+    }
+    if (!otgCompBillingItem.trim()) {
+      errors.otgCompBillingItem = 'OTG Comp Billing item is required';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setAddLineItemErrors(errors);
+      return;
+    }
+
+    // Create new record with all fields
+    const newRecord: MasterRecord = {
+      id: `master-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      clientName: accountCarrier,
+      serviceType: newLineItemForm['Service Provider'] || newLineItemForm.serviceType || '',
+      salesperson: newLineItemForm['COMP 1'] || newLineItemForm.salesperson || '',
+      expectedAmount: parseNumeric(newLineItemForm['Monthly Unit Price (Qty x Price; QRC/SEMI/YRC x 4,6,or 12)'] || newLineItemForm.expectedAmount || 0),
+      splitPercentage: parsePercent(newLineItemForm['EXPECTED/Mo. OTG Comp % - column R Comp Key'] || newLineItemForm.splitPercentage || 0),
+      ...newLineItemForm,
+      'Account **CARRIER**': accountCarrier,
+      'OTG Comp Billing item': otgCompBillingItem,
+    };
+
+    // Add to allRecords
+    onUpdate([...allRecords, newRecord]);
+    
+    // Close form and reset
+    setIsAddingLineItem(false);
+    setNewLineItemForm({});
+    setAddLineItemErrors({});
+  }, [newLineItemForm, allRecords, account, onUpdate]);
 
   const handleLogColumns = useCallback((record: MasterRecord) => {
     console.log('=== ALL COLUMNS FOR LINE ITEM ===');
@@ -155,6 +220,23 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
     if (!val) return 0;
     const cleaned = String(val).replace(/[^0-9.-]+/g, '');
     return parseFloat(cleaned) || 0;
+  };
+
+  // Helper to parse percentage (handles both decimal and percentage formats)
+  const parsePercent = (val: any): number => {
+    if (typeof val === 'number') {
+      return val > 1 ? val / 100 : val;
+    }
+    if (!val) return 0;
+    const cleanStr = String(val).replace(/[^0-9.-]+/g, '');
+    let num = parseFloat(cleanStr);
+    
+    if (String(val).includes('%')) {
+      num = num / 100;
+    } else if (num > 1) {
+      num = num / 100;
+    }
+    return num || 0;
   };
 
   // Helper to check if cell should be expandable
@@ -326,12 +408,20 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
               {account.summary.lineItemCount} line item{account.summary.lineItemCount !== 1 ? 's' : ''} • {columns.length} columns
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="ml-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors flex-shrink-0"
-          >
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleAddLineItem}
+              className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+            >
+              <Plus size={16} /> Add Line Item
+            </button>
+            <button
+              onClick={onClose}
+              className="ml-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors flex-shrink-0"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -382,8 +472,242 @@ const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
               </div>
             )}
 
+            {/* Add Line Item Form */}
+            {isAddingLineItem && (
+              <div className="border-b-2 border-green-200 bg-green-50/30 px-4 py-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-slate-800">Add New Line Item</h3>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveNewLineItem}
+                      className="p-1.5 text-green-600 hover:bg-green-100 rounded transition-colors"
+                      title="Save"
+                    >
+                      <Save size={16} />
+                    </button>
+                    <button
+                      onClick={handleCancelAddLineItem}
+                      className="p-1.5 text-slate-500 hover:bg-slate-100 rounded transition-colors"
+                      title="Cancel"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                </div>
+                {showAllColumns ? (
+                  // Dynamic form for all columns
+                  <div className="flex items-center gap-2 flex-wrap" style={{ minWidth: `${columns.length * 150}px` }}>
+                    {columns.map((col) => {
+                      const isRequired = col.key === 'Account **CARRIER**' || col.key === 'OTG Comp Billing item';
+                      const isDisabled = isRequired; // Disable required fields (pre-filled)
+                      const errorKey = col.key === 'Account **CARRIER**' ? 'accountCarrier' : 
+                                      col.key === 'OTG Comp Billing item' ? 'otgCompBillingItem' : col.key;
+                      const hasError = addLineItemErrors[errorKey];
+                      const inputType = col.type === 'number' || col.type === 'percent' ? 'number' : 'text';
+                      const value = newLineItemForm[col.key] !== undefined && newLineItemForm[col.key] !== null 
+                        ? String(newLineItemForm[col.key]) 
+                        : '';
+                      
+                      return (
+                        <div
+                          key={col.key}
+                          className={`flex-shrink-0 ${col.type === 'number' || col.type === 'percent' ? 'text-right' : ''}`}
+                          style={{ width: col.type === 'number' || col.type === 'percent' ? '120px' : '150px' }}
+                        >
+                          <input
+                            type={inputType}
+                            step={col.type === 'percent' ? '0.01' : col.type === 'number' ? '0.01' : undefined}
+                            className={`w-full border rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${
+                              hasError ? 'border-red-300 bg-red-50' : isDisabled ? 'border-slate-200 bg-slate-100' : 'border-slate-300'
+                            }`}
+                            value={value}
+                            onChange={e => {
+                              const newValue = col.type === 'number' || col.type === 'percent' 
+                                ? (e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)
+                                : e.target.value;
+                              setNewLineItemForm({ ...newLineItemForm, [col.key]: newValue });
+                              // Clear error when user types
+                              if (hasError) {
+                                const newErrors = { ...addLineItemErrors };
+                                delete newErrors[errorKey];
+                                setAddLineItemErrors(newErrors);
+                              }
+                            }}
+                            disabled={isDisabled}
+                            placeholder={col.label}
+                            title={isDisabled ? `${col.label} (pre-filled from account)` : col.label}
+                          />
+                          {hasError && (
+                            <p className="text-xs text-red-600 mt-0.5">{hasError}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  // Standard form for fixed columns
+                  <div className="flex items-center gap-3 flex-wrap" style={{ minWidth: '2200px' }}>
+                    <div className="w-12 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm.ST || newLineItemForm.st || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, ST: e.target.value, st: e.target.value })}
+                        placeholder="ST"
+                      />
+                    </div>
+                    <div className="w-32 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-200 bg-slate-100 rounded px-2 py-1 text-sm"
+                        value={String(newLineItemForm['Account **CARRIER**'] || account.accountCarrier || '')}
+                        disabled
+                        title="Account **CARRIER** (pre-filled from account)"
+                      />
+                    </div>
+                    <div className="w-32 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-200 bg-slate-100 rounded px-2 py-1 text-sm"
+                        value={String(newLineItemForm['OTG Comp Billing item'] || account.otgCompBillingItem || '')}
+                        disabled
+                        title="OTG Comp Billing item (pre-filled from account)"
+                      />
+                    </div>
+                    <div className="w-40 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['Service Provider'] || newLineItemForm.serviceProvider || newLineItemForm.serviceType || '')}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setNewLineItemForm({ ...newLineItemForm, 'Service Provider': val, serviceProvider: val, serviceType: val });
+                        }}
+                        placeholder="Service Provider"
+                      />
+                    </div>
+                    <div className="w-32 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['Status / Type'] || newLineItemForm.status || newLineItemForm.type || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, 'Status / Type': e.target.value, status: e.target.value, type: e.target.value })}
+                        placeholder="Status/Type"
+                      />
+                    </div>
+                    <div className="w-48 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['Item Desc. from current Carrier Statement'] || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, 'Item Desc. from current Carrier Statement': e.target.value })}
+                        placeholder="Item Description"
+                      />
+                    </div>
+                    <div className="w-28 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['Cust. ACTIVE BAN'] || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, 'Cust. ACTIVE BAN': e.target.value })}
+                        placeholder="Active BAN"
+                      />
+                    </div>
+                    <div className="w-24 flex-shrink-0 text-right">
+                      <input
+                        type="number"
+                        step="1"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm text-right focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={newLineItemForm.Quantity || newLineItemForm.quantity || ''}
+                        onChange={e => {
+                          const val = e.target.value === '' ? 0 : parseFloat(e.target.value) || 0;
+                          setNewLineItemForm({ ...newLineItemForm, Quantity: val, quantity: val });
+                        }}
+                        placeholder="0"
+                      />
+                    </div>
+                    <div className="w-32 flex-shrink-0 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm text-right focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={newLineItemForm.Price || newLineItemForm.price || ''}
+                        onChange={e => {
+                          const val = e.target.value === '' ? 0 : parseFloat(e.target.value) || 0;
+                          setNewLineItemForm({ ...newLineItemForm, Price: val, price: val });
+                        }}
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div className="w-36 flex-shrink-0 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm text-right focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={newLineItemForm['Monthly Unit Price (Qty x Price; QRC/SEMI/YRC x 4,6,or 12)'] || ''}
+                        onChange={e => {
+                          const val = e.target.value === '' ? 0 : parseFloat(e.target.value) || 0;
+                          setNewLineItemForm({ ...newLineItemForm, 'Monthly Unit Price (Qty x Price; QRC/SEMI/YRC x 4,6,or 12)': val });
+                        }}
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div className="w-32 flex-shrink-0 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm text-right focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={newLineItemForm['EXPECTED/Mo. OTG Comp % - column R Comp Key'] || ''}
+                        onChange={e => {
+                          const val = e.target.value === '' ? 0 : parseFloat(e.target.value) || 0;
+                          setNewLineItemForm({ ...newLineItemForm, 'EXPECTED/Mo. OTG Comp % - column R Comp Key': val });
+                        }}
+                        placeholder="0.00"
+                      />
+                    </div>
+                    <div className="w-28 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['COMP 1'] || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, 'COMP 1': e.target.value })}
+                        placeholder="COMP 1"
+                      />
+                    </div>
+                    <div className="w-28 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['COMP 2'] || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, 'COMP 2': e.target.value })}
+                        placeholder="COMP 2"
+                      />
+                    </div>
+                    <div className="w-28 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['COMP 3'] || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, 'COMP 3': e.target.value })}
+                        placeholder="COMP 3"
+                      />
+                    </div>
+                    <div className="w-28 flex-shrink-0">
+                      <input
+                        type="text"
+                        className="w-full border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        value={String(newLineItemForm['COMP 4'] || '')}
+                        onChange={e => setNewLineItemForm({ ...newLineItemForm, 'COMP 4': e.target.value })}
+                        placeholder="COMP 4"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Line Items List */}
-            {account.lineItems.length === 0 ? (
+            {account.lineItems.length === 0 && !isAddingLineItem ? (
               <div className="px-4 py-16 text-center text-slate-400">
                 No line items found
               </div>

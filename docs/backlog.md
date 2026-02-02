@@ -57,10 +57,150 @@ Acceptance:
 - Fix Firebase Setup and Verify Backend Works (2026-01-28) - Installed Firebase dependencies, verified configuration, tested upload/delete operations
 - Clean Up Master Data CSV and Import to Firebase (2026-01-28) - Added CSV analysis and cleaning services using Gemini, created Master Data 2 tab with all 62 columns, implemented CSV reformatting script
 - Switch Statement Processing to Use Master Data 2 (2026-01-30) - Updated App.tsx and Dashboard.tsx to use masterData2, implemented Master Data 2 persistence in Firebase, added optimistic UI updates for deletions, optimized duplicate detection and seller statement updates
+- Update Commissions Tab to Show Expandable Months Jan-Jun 2026 with Carrier Status (2026-01-30) - Restructured Commissions tab to show 6 months as expandable accordion sections, each showing carrier status and seller statements when expanded
 
 ### 🔄 In Progress
+- Add New Accounts and Line Items to Master Data 2
 
 ### 📋 Backlog
+
+#### Ticket: Add New Accounts and Line Items to Master Data 2
+**Goal**: Add functionality to create new accounts and add new line items to existing accounts in Master Data 2
+
+**Problem**: 
+- Currently can only edit/delete existing line items
+- No way to add new accounts
+- No way to add new line items to existing accounts
+- Need to make the comp key more usable for adding new data
+
+**Current State**:
+- Master Data 2 shows accounts grouped by Account **CARRIER** + OTG Comp Billing item
+- `AccountDetailsModal` allows editing and deleting line items
+- No "Add" functionality exists
+
+**Desired Functionality**:
+
+1. **Add New Account**:
+   - Button in MasterDataList2: "Add New Account"
+   - Opens modal/form to create new account
+   - Requires: Account **CARRIER**, OTG Comp Billing item (these define the account)
+   - Optionally pre-fill other fields with defaults
+   - Creates new account with first line item
+   - Account appears in account list after creation
+
+2. **Add Line Item to Existing Account**:
+   - Button in `AccountDetailsModal`: "Add Line Item"
+   - Opens form/modal to add new line item to current account
+   - Pre-fills Account **CARRIER** and OTG Comp Billing item (from account)
+   - Allows editing all other fields
+   - Adds line item to existing account
+   - Updates account grouping automatically
+
+**UI Design**:
+
+**Add New Account Flow**:
+```
+MasterDataList2:
+  [Add New Account] button
+    ↓
+  Modal/Form:
+    - Account **CARRIER** (required)
+    - OTG Comp Billing item (required)
+    - Other fields (optional, with defaults)
+    [Cancel] [Create Account]
+```
+
+**Add Line Item Flow**:
+```
+AccountDetailsModal:
+  [Add Line Item] button
+    ↓
+  Form/Inline Editor:
+    - Account **CARRIER** (pre-filled, disabled)
+    - OTG Comp Billing item (pre-filled, disabled)
+    - All other fields (editable)
+    [Cancel] [Add Line Item]
+```
+
+**Required Fields** (for new accounts/line items):
+- Account **CARRIER** (string) - Required
+- OTG Comp Billing item (string) - Required
+- Service Provider (string) - Optional but recommended
+- COMP 1, COMP 2, COMP 3, COMP 4 (strings) - Optional
+- Monthly Unit Price (number) - Optional
+- EXPECTED/Mo. OTG Comp % (number/percent) - Optional
+- All other 62 columns - Optional
+
+**DB**: None (uses existing Firebase masterRecords collection)
+
+**UI**: Add "Add New Account" and "Add Line Item" buttons and forms
+
+**Files to Update**:
+- `components/MasterDataList2.tsx`:
+  - Add "Add New Account" button
+  - Add modal/form for creating new account
+  - Handle account creation (creates new MasterRecord)
+  
+- `components/AccountDetailsModal.tsx`:
+  - Add "Add Line Item" button
+  - Add form/inline editor for adding line item
+  - Pre-fill Account **CARRIER** and OTG Comp Billing item
+  - Handle line item creation (adds to existing account)
+
+**Implementation Details**:
+
+1. **Add New Account Modal**:
+   - Create new component or add to MasterDataList2
+   - Form fields for required fields (Account **CARRIER**, OTG Comp Billing item)
+   - Optional fields can be added later via edit
+   - On submit: Create new MasterRecord with all fields
+   - Generate unique ID: `master-${Date.now()}-${Math.random()}`
+   - Save to Firebase via `handleUpdate`
+   - Close modal and show new account in list
+
+2. **Add Line Item Form**:
+   - Add to AccountDetailsModal (can be inline or modal)
+   - Pre-fill Account **CARRIER** from account
+   - Pre-fill OTG Comp Billing item from account
+   - Show form fields for other important columns
+   - On submit: Create new MasterRecord
+   - Add to existing account (same Account **CARRIER** + OTG Comp Billing item)
+   - Save to Firebase
+   - Refresh account details
+
+3. **Field Handling**:
+   - Use existing `columns` array to determine which fields to show
+   - Support all 62 columns dynamically
+   - Required fields: Account **CARRIER**, OTG Comp Billing item
+   - Optional fields: Everything else
+   - Use appropriate input types (text, number, percent) based on column type
+
+**Acceptance**:
+- [ ] "Add New Account" button exists in MasterDataList2
+- [ ] Clicking button opens form/modal
+- [ ] Can create new account with Account **CARRIER** and OTG Comp Billing item
+- [ ] New account appears in account list after creation
+- [ ] "Add Line Item" button exists in AccountDetailsModal
+- [ ] Clicking button opens form/inline editor
+- [ ] Form pre-fills Account **CARRIER** and OTG Comp Billing item
+- [ ] Can add new line item to existing account
+- [ ] New line item appears in account details
+- [ ] All fields save correctly to Firebase
+- [ ] Account grouping updates correctly after adding
+- [ ] Validation: Required fields must be filled
+- [ ] Can cancel without saving
+
+**Dependencies**: None
+
+**Notes**: 
+- Account is defined by Account **CARRIER** + OTG Comp Billing item combination
+- New accounts need at least these two fields
+- Line items added to account must have same Account **CARRIER** + OTG Comp Billing item
+- Use existing Firebase hooks for saving (`useSaveMasterData2`)
+- Consider showing most important fields first, then allow editing all fields
+- Can reuse existing edit form logic for consistency
+
+---
 
 #### ✅ Ticket: Update Commissions Tab to Show Expandable Months Jan-Jun 2026 with Carrier Status (COMPLETED 2026-01-30)
 **Goal**: Update Commissions tab to show January 2026 through June 2026 as expandable sections, each showing carrier statement upload status

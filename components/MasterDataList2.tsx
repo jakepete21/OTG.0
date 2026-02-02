@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { MasterRecord } from '../types';
-import { Download, Upload, Loader2, AlertTriangle, FileJson, Building2, DollarSign, Search, RefreshCcw } from 'lucide-react';
+import { Download, Upload, Loader2, AlertTriangle, FileJson, Building2, DollarSign, Search, RefreshCcw, Plus, X, Save } from 'lucide-react';
 import { loadReformattedMasterData } from '../services/reformattedMasterData';
 import { groupRecordsByAccount, AccountGroup } from '../services/accountGrouping';
 import AccountListItem from './AccountListItem';
@@ -161,6 +161,11 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
   
   // Account Details Modal State
   const [selectedAccount, setSelectedAccount] = useState<AccountGroup | null>(null);
+  
+  // Add New Account Modal State
+  const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+  const [newAccountForm, setNewAccountForm] = useState<Partial<MasterRecord>>({});
+  const [addAccountErrors, setAddAccountErrors] = useState<Record<string, string>>({});
   
   // Search State
   const [searchQuery, setSearchQuery] = useState('');
@@ -481,6 +486,82 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
     document.body.removeChild(link);
   };
 
+  // Handle Add New Account
+  const handleAddAccount = useCallback(() => {
+    setShowAddAccountModal(true);
+    setNewAccountForm({});
+    setAddAccountErrors({});
+  }, []);
+
+  const handleCancelAddAccount = useCallback(() => {
+    setShowAddAccountModal(false);
+    setNewAccountForm({});
+    setAddAccountErrors({});
+  }, []);
+
+  const handleSaveNewAccount = useCallback(() => {
+    // Validate required fields
+    const errors: Record<string, string> = {};
+    const accountCarrier = newAccountForm['Account **CARRIER**'] || newAccountForm.clientName || '';
+    const otgCompBillingItem = newAccountForm['OTG Comp Billing item'] || '';
+
+    if (!accountCarrier.trim()) {
+      errors.accountCarrier = 'Account **CARRIER** is required';
+    }
+    if (!otgCompBillingItem.trim()) {
+      errors.otgCompBillingItem = 'OTG Comp Billing item is required';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setAddAccountErrors(errors);
+      return;
+    }
+
+    // Create new record with all fields
+    const newRecord: MasterRecord = {
+      id: `master-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      clientName: accountCarrier,
+      serviceType: newAccountForm['Service Provider'] || newAccountForm.serviceType || '',
+      salesperson: newAccountForm['COMP 1'] || newAccountForm.salesperson || '',
+      expectedAmount: parseCurrency(newAccountForm['Monthly Unit Price (Qty x Price; QRC/SEMI/YRC x 4,6,or 12)'] || newAccountForm.expectedAmount || 0),
+      splitPercentage: parsePercent(newAccountForm['EXPECTED/Mo. OTG Comp % - column R Comp Key'] || newAccountForm.splitPercentage || 0),
+      ...newAccountForm,
+      'Account **CARRIER**': accountCarrier,
+      'OTG Comp Billing item': otgCompBillingItem,
+    };
+
+    // Add to data array
+    handleUpdate([...localData, newRecord]);
+    
+    // Close modal and reset form
+    setShowAddAccountModal(false);
+    setNewAccountForm({});
+    setAddAccountErrors({});
+  }, [newAccountForm, localData, handleUpdate]);
+
+  // Get important fields for "Add New Account" form (required + commonly used)
+  const getImportantFields = useMemo(() => {
+    if (columns.length === 0) return [];
+    
+    const importantFieldKeys = [
+      'Account **CARRIER**',
+      'OTG Comp Billing item',
+      'Service Provider',
+      'ST',
+      'COMP 1',
+      'COMP 2',
+      'COMP 3',
+      'COMP 4',
+      'Monthly Unit Price (Qty x Price; QRC/SEMI/YRC x 4,6,or 12)',
+      'EXPECTED/Mo. OTG Comp % - column R Comp Key',
+      'Status / Type',
+      'Quantity',
+      'Price',
+    ];
+
+    return columns.filter(col => importantFieldKeys.includes(col.key));
+  }, [columns]);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -495,6 +576,12 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
               Saving to Firebase...
             </div>
           )}
+          <button 
+            onClick={handleAddAccount}
+            className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs sm:text-sm font-medium shadow-sm"
+          >
+            <Plus size={16} /> Add New Account
+          </button>
           <button 
             onClick={exportCSV}
             disabled={localData.length === 0}
@@ -656,6 +743,90 @@ const MasterDataList2: React.FC<MasterDataList2Props> = ({ data, onUpdate }) => 
           onUpdate={handleUpdate}
           allRecords={localData}
         />
+      )}
+
+      {/* Add New Account Modal */}
+      {showAddAccountModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={handleCancelAddAccount}>
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="p-6 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-xl font-bold text-slate-800">Add New Account</h2>
+              <button
+                onClick={handleCancelAddAccount}
+                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Form Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-4">
+                {getImportantFields.map((col) => {
+                  const isRequired = col.key === 'Account **CARRIER**' || col.key === 'OTG Comp Billing item';
+                  const errorKey = col.key === 'Account **CARRIER**' ? 'accountCarrier' : 
+                                  col.key === 'OTG Comp Billing item' ? 'otgCompBillingItem' : col.key;
+                  const hasError = addAccountErrors[errorKey];
+                  const inputType = col.type === 'number' || col.type === 'percent' ? 'number' : 'text';
+                  
+                  return (
+                    <div key={col.key}>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">
+                        {col.label}
+                        {isRequired && <span className="text-red-500 ml-1">*</span>}
+                      </label>
+                      <input
+                        type={inputType}
+                        step={col.type === 'percent' ? '0.01' : col.type === 'number' ? '0.01' : undefined}
+                        className={`w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${
+                          hasError ? 'border-red-300 bg-red-50' : 'border-slate-300'
+                        }`}
+                        value={newAccountForm[col.key] !== undefined && newAccountForm[col.key] !== null ? String(newAccountForm[col.key]) : ''}
+                        onChange={e => {
+                          const newValue = col.type === 'number' || col.type === 'percent' 
+                            ? (e.target.value === '' ? undefined : parseFloat(e.target.value) || 0)
+                            : e.target.value;
+                          setNewAccountForm({ ...newAccountForm, [col.key]: newValue });
+                          // Clear error when user types
+                          if (hasError) {
+                            const newErrors = { ...addAccountErrors };
+                            delete newErrors[errorKey];
+                            setAddAccountErrors(newErrors);
+                          }
+                        }}
+                        placeholder={col.label}
+                      />
+                      {hasError && (
+                        <p className="mt-1 text-xs text-red-600">{hasError}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2 rounded-b-xl">
+              <button
+                onClick={handleCancelAddAccount}
+                className="px-4 py-2 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveNewAccount}
+                className="px-4 py-2 bg-green-600 text-white hover:bg-green-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+              >
+                <Save size={16} />
+                Create Account
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
