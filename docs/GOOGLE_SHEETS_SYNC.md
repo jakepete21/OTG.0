@@ -1,14 +1,14 @@
 # Google Sheets Sync Setup Guide
 
-This guide explains how to set up and use the bidirectional sync between the Comp Key (Master Data 2) and Google Sheets.
+This guide explains how to set up and use the Google Sheets sync feature for the Comp Key (Master Data 2).
 
 ## Overview
 
 The Sync Test tab allows you to:
-1. **Compare** your Firebase master data with a Google Sheet
-2. **Review differences** before syncing (added, modified, deleted records)
-3. **Selectively sync** changes from Sheet → App or App → Sheet
-4. **Bidirectional sync** - keep both sides in sync
+1. **Load data** from a Google Sheet exactly as it appears
+2. **Sync to database** - Replace your Firebase database with the sheet data
+3. **Preserve structure** - Maintains all columns, column order, and account/line item grouping
+4. **Simple sync** - Direct replacement: sheet becomes the source of truth
 
 ## Prerequisites
 
@@ -78,64 +78,52 @@ The Sync Test tab allows you to:
 ### 2. Configure Sheet
 
 1. Enter your **Spreadsheet ID** (from the Google Sheet URL)
-2. Enter the **Range** (default: `Sheet1!A1:ZZ`)
-   - Format: `SheetName!A1:ZZ` (adjust based on your sheet)
-3. Click **"Load Sheet Data"**
-4. The system will read the sheet and compare with Firebase data
+   - You can paste the full URL or just the ID
+   - The ID will be extracted automatically
+2. Enter the **Tab Name** (default: `Sheet1`)
+   - This is the name of the tab/sheet within your spreadsheet
+3. Enter the **Range** (default: `A1:ZZ`)
+   - Cell range to read (e.g., `A1:ZZ`, `A1:Z1000`)
+   - The full range will be: `{TabName}!{Range}` (e.g., `Sheet1!A1:ZZ`)
+4. Click **"Load Sheet Data"**
+5. The system will read all data from the sheet
+6. You'll see a status message showing how many records were loaded
 
-### 3. Review Differences
+### 3. Sync to Database
 
-The Sync Test tab shows:
-- **Added**: Records in Sheet but not in App (green)
-- **Modified**: Records in both but with different values (yellow)
-- **Deleted**: Records in App but not in Sheet (red)
-- **Unchanged**: Records that match (gray)
-
-Each difference shows:
-- Account **CARRIER** name
-- OTG Comp Billing item
-- For modified records: field-by-field changes
-
-### 4. Select Changes to Sync
-
-1. **Check/uncheck** individual differences using the checkbox
-2. Use **"Select All"** or **"Deselect All"** buttons
-3. Only selected differences will be synced
-
-### 5. Sync Changes
-
-**Sync Selected to App** (Sheet → App):
-- Adds new records from Sheet to Firebase
-- Updates existing records with Sheet values
-- Keeps Firebase IDs (doesn't delete records)
-
-**Sync All to Sheet** (App → Sheet):
-- Writes all Firebase records to the Sheet
-- **Overwrites** the entire sheet range
-- Use with caution - this replaces Sheet data
+1. Review the status message - it shows how many records will be synced
+2. Click **"Sync to Database"** button
+3. Confirm the sync (you'll see a warning about replacing all database records)
+4. The sync will:
+   - Replace your entire Firebase database with the sheet data
+   - Preserve all columns exactly as they appear in the sheet
+   - Maintain column order from the sheet headers
+   - Preserve existing IDs where records match (same Account **CARRIER** + OTG Comp Billing item)
+   - Generate new IDs for new records
+   - Maintain account/line item structure (grouped automatically)
 
 ## Sync Behavior
 
-### Comparison Logic
+### How Sync Works
 
-Records are matched using:
-- **Account **CARRIER** + OTG Comp Billing item** (unique key)
+1. **Load Sheet Data**: Reads all rows from the specified sheet range
+2. **Preserve Headers**: Uses the first row as column headers
+3. **Create Records**: Converts each row to a `MasterRecord` with all columns preserved
+4. **Sync to Database**: Replaces entire Firebase database with sheet data
 
-If both match, records are compared field-by-field.
+### Data Preservation
 
-### Conflict Resolution
+- **All Columns**: Every column from the sheet is preserved
+- **Column Order**: Maintains the exact order from sheet headers
+- **All Values**: Preserves all cell values exactly as they appear (including empty cells)
+- **Data Types**: Numbers, text, percentages all preserved as-is
 
-- **Sheet → App**: Sheet values take precedence
-- **App → Sheet**: App values take precedence
-- **Manual selection**: You choose which changes to accept
+### ID Preservation
 
-### Data Mapping
-
-The sync service automatically:
-- Maps Firebase `MasterRecord` structure to Sheet rows
-- Handles all 62 columns dynamically
-- Preserves data types (numbers, text, percentages)
-- Generates IDs for new records
+- Records are matched by: **Account **CARRIER** + OTG Comp Billing item**
+- If a record in the sheet matches an existing database record (same Account + Billing Item), the existing ID is preserved
+- New records get new IDs generated automatically
+- This ensures account/line item grouping works correctly after sync
 
 ## Environment Variables (Optional)
 
@@ -182,15 +170,24 @@ Otherwise, enter them manually in the Sync Test tab (they'll be saved to localSt
 ## Best Practices
 
 1. **Test first**: Use a test sheet before syncing production data
-2. **Backup**: Export Firebase data before syncing
-3. **Review changes**: Always review differences before accepting
-4. **Incremental sync**: Sync small batches first
-5. **One-way sync**: Prefer Sheet → App for initial import, then App → Sheet for updates
+2. **Backup**: Export Firebase data before syncing (the sync replaces all data)
+3. **Verify sheet structure**: Ensure your sheet has all required columns
+4. **Check data**: Review the loaded record count before syncing
+5. **One-way sync**: This is Sheet → Database only (sheet is source of truth)
+
+## Account/Line Item Structure
+
+After syncing, records are automatically grouped by:
+- **Account **CARRIER** + OTG Comp Billing item** = One Account
+- Multiple records with the same Account + Billing Item = Multiple Line Items
+
+This matches the existing Comp Key view structure, so accounts will appear correctly with their line items in the popup.
 
 ## Limitations
 
+- **One-way sync**: Sheet → Database only (no Database → Sheet sync)
+- **Full replacement**: Syncs replace the entire database (not incremental)
 - **No real-time sync**: Manual sync only (no automatic polling)
-- **No conflict detection**: Last write wins (manual selection helps)
 - **No history**: Changes are not tracked/versioned
 - **Sheet size limits**: Google Sheets has row/column limits
 - **Rate limits**: Google Sheets API has rate limits (100 requests/100 seconds/user)
@@ -198,8 +195,8 @@ Otherwise, enter them manually in the Sync Test tab (they'll be saved to localSt
 ## Future Enhancements
 
 Potential improvements:
-- Automatic polling for Sheet changes
-- Conflict resolution UI (side-by-side comparison)
+- Bidirectional sync (Database → Sheet)
+- Incremental sync (only changed records)
+- Conflict detection and resolution
 - Sync history/audit log
-- Batch operations for large datasets
-- Webhook support for real-time updates
+- Automatic polling for Sheet changes
