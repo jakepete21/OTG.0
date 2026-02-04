@@ -346,14 +346,17 @@ const calculateRoleSplits = (
     if (!shareCents) return;
     allocatedCents += shareCents;
 
-    // Handle HA* roles: store them separately but they aggregate into OTG seller statement
+    // Handle HA* roles
     if (isHA(roleKey)) {
-      // Store HA role in its own field for tracking
+      // HA1, HA2, HA3, HA4: ignore — do not allocate to HA or OTG here; remainder will go to OTG (Rule #2)
+      if (roleKey === 'HA1' || roleKey === 'HA2' || roleKey === 'HA3' || roleKey === 'HA4') {
+        return;
+      }
+      // HA5, HA6: store and aggregate into OTG seller statement
       if (roleKey in splits) {
         const currentCents = toCents(splits[roleKey as keyof RoleSplits] || 0);
         splits[roleKey as keyof RoleSplits] = centsToNum(currentCents + shareCents);
       }
-      // Also add to OTG (HA roles aggregate into OTG seller statement)
       const currentOtgCents = toCents(splits.OTG || 0);
       splits.OTG = centsToNum(currentOtgCents + shareCents);
       return;
