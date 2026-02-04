@@ -77,7 +77,6 @@ const StatementCompare: React.FC = () => {
       }
     } catch (err: any) {
       setError(`Failed to parse file: ${err.message}`);
-      console.error('[StatementCompare] Parse error:', err);
     } finally {
       setIsProcessing(false);
     }
@@ -112,7 +111,6 @@ const StatementCompare: React.FC = () => {
       setError(null);
     } catch (err: any) {
       setError(`Failed to parse data: ${err.message}`);
-      console.error('[StatementCompare] Parse error:', err);
     } finally {
       setIsProcessing(false);
     }
@@ -315,7 +313,7 @@ const StatementCompare: React.FC = () => {
           {/* Role Group Comparisons */}
           {comparisonResult.roleGroups.map((rg) => {
             const isExpanded = expandedRoleGroups.has(rg.roleGroup);
-            const hasIssues = rg.differences.length > 0 || rg.missingInCsv.length > 0 || rg.missingInFirebase.length > 0;
+            const hasIssues = rg.differences.length > 0;
             const totalCompared = rg.matched.length + rg.differences.length;
 
             return (
@@ -438,82 +436,6 @@ const StatementCompare: React.FC = () => {
                                     </tr>
                                   ))}
                                 </React.Fragment>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Missing in CSV (items in Firebase but not CSV) */}
-                    {rg.missingInCsv.length > 0 && (
-                      <div>
-                        <h4 className="font-semibold text-amber-700 mb-2">
-                          Missing in CSV ({rg.missingInCsv.length})
-                        </h4>
-                        <p className="text-sm text-slate-600 mb-2">
-                          Items found in Firebase seller statements but not in uploaded CSV
-                        </p>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-sm">
-                            <thead className="bg-amber-50">
-                              <tr>
-                                <th className="px-3 py-2 text-left">Billing Item</th>
-                                <th className="px-3 py-2 text-left">Account Name</th>
-                                <th className="px-3 py-2 text-right">OTG Comp</th>
-                                <th className="px-3 py-2 text-right">Seller Comp</th>
-                                <th className="px-3 py-2 text-left">State</th>
-                                <th className="px-3 py-2 text-left">Provider</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {rg.missingInCsv.map((item, idx) => (
-                                <tr key={idx} className="border-t border-amber-100 bg-amber-50">
-                                  <td className="px-3 py-2">{item.otgCompBillingItem}</td>
-                                  <td className="px-3 py-2">{item.accountName}</td>
-                                  <td className="px-3 py-2 text-right">{formatCurrency(item.otgComp)}</td>
-                                  <td className="px-3 py-2 text-right">{formatCurrency(item.sellerComp)}</td>
-                                  <td className="px-3 py-2">{item.state}</td>
-                                  <td className="px-3 py-2">{item.provider}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Missing in Firebase (items in CSV but not Firebase) */}
-                    {rg.missingInFirebase.length > 0 && (
-                      <div>
-                        <h4 className="font-semibold text-blue-700 mb-2">
-                          Missing in Firebase ({rg.missingInFirebase.length})
-                        </h4>
-                        <p className="text-sm text-slate-600 mb-2">
-                          Items found in uploaded CSV but not in Firebase seller statements
-                        </p>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-sm">
-                            <thead className="bg-blue-50">
-                              <tr>
-                                <th className="px-3 py-2 text-left">Billing Item</th>
-                                <th className="px-3 py-2 text-left">Account Name</th>
-                                <th className="px-3 py-2 text-right">OTG Comp</th>
-                                <th className="px-3 py-2 text-right">Seller Comp</th>
-                                <th className="px-3 py-2 text-left">State</th>
-                                <th className="px-3 py-2 text-left">Provider</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {rg.missingInFirebase.map((item, idx) => (
-                                <tr key={idx} className="border-t border-blue-100 bg-blue-50">
-                                  <td className="px-3 py-2">{item.otgCompBillingItem}</td>
-                                  <td className="px-3 py-2">{item.accountName}</td>
-                                  <td className="px-3 py-2 text-right">{formatCurrency(item.otgComp)}</td>
-                                  <td className="px-3 py-2 text-right">{formatCurrency(item.sellerComp)}</td>
-                                  <td className="px-3 py-2">{item.state}</td>
-                                  <td className="px-3 py-2">{item.provider}</td>
-                                </tr>
                               ))}
                             </tbody>
                           </table>

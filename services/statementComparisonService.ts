@@ -128,12 +128,15 @@ const normalizeNumber = (val: any, originalString?: string): number => {
   return Number(val);
 };
 
+/** Round to 2 decimal places for consistent totals and comparison (avoids floating point and tolerance mismatches) */
+const round2 = (x: number): number => Math.round(x * 100) / 100;
+
 /**
- * Check if two numbers are equal within tolerance ($0.01)
- * For commission comparisons, we use $0.01 tolerance to handle rounding differences
+ * Check if two numbers are equal after rounding to 2 decimals.
+ * This keeps row-level "differences" in sync with total difference (no hidden rounding).
  */
-const numbersEqual = (a: number, b: number, tolerance: number = 0.01): boolean => {
-  return Math.abs(a - b) <= tolerance;
+const numbersEqual = (a: number, b: number): boolean => {
+  return round2(a) === round2(b);
 };
 
 /**
@@ -172,7 +175,6 @@ const detectColumnsWithGemini = async (
   roleGroupColumn?: string;
 }> => {
   if (!process.env.API_KEY && !process.env.GEMINI_API_KEY) {
-    console.warn('[detectColumnsWithGemini] No API key found, using fallback detection');
     return {};
   }
 
@@ -261,7 +263,6 @@ const detectColumnsWithGemini = async (
 
     const resultText = response.text;
     if (!resultText) {
-      console.warn('[detectColumnsWithGemini] No response from Gemini');
       return {};
     }
 
@@ -269,8 +270,7 @@ const detectColumnsWithGemini = async (
     const result = JSON.parse(cleaned);
     
     return result;
-  } catch (error: any) {
-    console.error('[detectColumnsWithGemini] Error:', error);
+  } catch {
     return {};
   }
 };
@@ -397,12 +397,6 @@ const mapCsvRowToItem = (
     }
   }
   
-  // Log raw values for specific billing items to debug parsing
-  if (otgCompBillingItem === '860324' || otgCompBillingItem === '643164' || otgCompBillingItem === '23563802') {
-    console.log(`[CSV Parse] BillingItem=${otgCompBillingItem}`);
-    console.log(`  Raw OTG Comp value:`, rawOtgComp, `type:`, typeof rawOtgComp, `string:`, rawOtgCompStr, `needsNegation:`, otgCompNeedsNegation);
-    console.log(`  Raw Seller Comp value:`, rawSellerComp, `type:`, typeof rawSellerComp, `string:`, rawSellerCompStr, `needsNegation:`, sellerCompNeedsNegation);
-  }
   
   let otgComp = normalizeNumber(rawOtgComp, rawOtgCompStr);
   let sellerComp = normalizeNumber(rawSellerComp, rawSellerCompStr);
@@ -421,11 +415,6 @@ const mapCsvRowToItem = (
   }
   const provider = providerIdx >= 0 ? String(row[headers[providerIdx]] || '').trim() : '';
   
-  // Log normalized values for debugging
-  if (otgCompBillingItem === '860324' || otgCompBillingItem === '643164' || otgCompBillingItem === '23563802') {
-    console.log(`[CSV Parse] BillingItem=${otgCompBillingItem}, Normalized OTG Comp:`, otgComp, 'Normalized Seller Comp:', sellerComp);
-  }
-
   // Skip rows missing essential fields
   if (!otgCompBillingItem || !accountName) {
     return null;
@@ -538,7 +527,6 @@ export const parseUploadedStatements = async (
     (rawData as any).__accountingFormats = accountingFormatMap;
 
     if (!Array.isArray(rawData) || rawData.length === 0) {
-      console.warn(`[parseUploadedStatements] Sheet "${sheetName}" is empty`);
       continue;
     }
 
@@ -616,8 +604,6 @@ export const parseUploadedStatements = async (
               itemsByRoleGroup.set(matchedRoleGroup, []);
             }
             itemsByRoleGroup.get(matchedRoleGroup)!.push(item);
-          } else {
-            console.warn(`[parseUploadedStatements] Row with role group value "${rowRoleGroupValue}" doesn't match any known role group (RD1/2, RD3/4, RM1/2, RM3/4, OVR/RD5, OTG)`);
           }
         }
       }
@@ -678,7 +664,6 @@ export const parseUploadedStatements = async (
 
       // If no role group match, save for manual selection (don't return early)
       if (!roleGroup) {
-        console.warn(`[parseUploadedStatements] Sheet "${sheetName}" doesn't match any role group. Available sheets: ${workbook.SheetNames.join(', ')}`);
         unmatchedSheets.push({ headers, rows: rawData, sheetName });
         continue; // Continue processing other sheets
       }
@@ -756,11 +741,6 @@ const createMatchKey = (item: SellerStatementItem): string => {
   const accountName = normalizeString(item.accountName);
   const key = `${billingItem}||${accountName}`;
   
-  // Log key creation for debugging specific items
-  if (item.otgCompBillingItem === '23563802' || item.otgCompBillingItem === '860324' || item.otgCompBillingItem === '643164') {
-    console.log(`[createMatchKey] BillingItem=${item.otgCompBillingItem}, Account="${item.accountName}" -> Key="${key}"`);
-  }
-  
   return key;
 };
 
@@ -773,10 +753,7 @@ const compareItems = (
 ): { field: string; csvValue: any; firebaseValue: any }[] => {
   const differences: { field: string; csvValue: any; firebaseValue: any }[] = [];
 
-  // Compare otgComp (with tolerance)
   if (!numbersEqual(csv.otgComp, firebase.otgComp)) {
-    const diff = Math.abs(csv.otgComp - firebase.otgComp);
-    console.log(`[DIFFERENCE] OTG Comp: CSV=${csv.otgComp}, Firebase=${firebase.otgComp}, Diff=${diff.toFixed(2)}, BillingItem=${csv.otgCompBillingItem}, Account=${csv.accountName}`);
     differences.push({
       field: 'otgComp',
       csvValue: csv.otgComp,
@@ -784,10 +761,7 @@ const compareItems = (
     });
   }
 
-  // Compare sellerComp (with tolerance)
   if (!numbersEqual(csv.sellerComp, firebase.sellerComp)) {
-    const diff = Math.abs(csv.sellerComp - firebase.sellerComp);
-    console.log(`[DIFFERENCE] Seller Comp: CSV=${csv.sellerComp}, Firebase=${firebase.sellerComp}, Diff=${diff.toFixed(2)}, BillingItem=${csv.otgCompBillingItem}, Account=${csv.accountName}`);
     differences.push({
       field: 'sellerComp',
       csvValue: csv.sellerComp,
@@ -795,9 +769,7 @@ const compareItems = (
     });
   }
 
-  // Compare state (exact match, case-insensitive)
   if (normalizeString(csv.state) !== normalizeString(firebase.state)) {
-    console.log(`[DIFFERENCE] State: CSV="${csv.state}", Firebase="${firebase.state}", BillingItem=${csv.otgCompBillingItem}, Account=${csv.accountName}`);
     differences.push({
       field: 'state',
       csvValue: csv.state,
@@ -805,9 +777,7 @@ const compareItems = (
     });
   }
 
-  // Compare accountName (exact match, case-insensitive)
   if (normalizeString(csv.accountName) !== normalizeString(firebase.accountName)) {
-    console.log(`[DIFFERENCE] Account Name: CSV="${csv.accountName}", Firebase="${firebase.accountName}", BillingItem=${csv.otgCompBillingItem}`);
     differences.push({
       field: 'accountName',
       csvValue: csv.accountName,
@@ -815,9 +785,7 @@ const compareItems = (
     });
   }
 
-  // Compare provider (exact match, case-insensitive)
   if (normalizeString(csv.provider) !== normalizeString(firebase.provider)) {
-    console.log(`[DIFFERENCE] Provider: CSV="${csv.provider}", Firebase="${firebase.provider}", BillingItem=${csv.otgCompBillingItem}, Account=${csv.accountName}`);
     differences.push({
       field: 'provider',
       csvValue: csv.provider,
@@ -850,60 +818,16 @@ export const compareStatements = async (
     const csvItems = csvStatements[roleGroup] || [];
     const firebaseItems = firebaseByRoleGroup.get(roleGroup) || [];
 
-    // Log summary for each role group
-    console.log(`\n[compareStatements] ${roleGroup}: CSV items=${csvItems.length}, Firebase items=${firebaseItems.length}`);
-    
-    // Warn if Firebase has items that might be stale (not in current matches)
-    if (roleGroup === 'OTG' && firebaseItems.length > csvItems.length) {
-      console.warn(`[compareStatements] ${roleGroup}: Firebase has ${firebaseItems.length} items but CSV has ${csvItems.length}. Some Firebase items may be stale (from old matches).`);
-    }
-
     // Create maps for matching
     const csvMap = new Map<string, SellerStatementItem>();
     const firebaseMap = new Map<string, SellerStatementItem>();
 
     for (const item of csvItems) {
-      const key = createMatchKey(item);
-      // Check for duplicate keys in CSV
-      if (csvMap.has(key)) {
-        console.warn(`[compareStatements] ${roleGroup}: Duplicate CSV key detected: ${key} (BillingItem=${item.otgCompBillingItem}, Account=${item.accountName})`);
-      }
-      csvMap.set(key, item);
+      csvMap.set(createMatchKey(item), item);
     }
 
     for (const item of firebaseItems) {
-      const key = createMatchKey(item);
-      // Check for duplicate keys in Firebase
-      if (firebaseMap.has(key)) {
-        console.warn(`[compareStatements] ${roleGroup}: Duplicate Firebase key detected: ${key} (BillingItem=${item.otgCompBillingItem}, Account=${item.accountName})`);
-      }
-      firebaseMap.set(key, item);
-    }
-    
-    // Log unmatched items
-    const csvKeys = new Set(csvMap.keys());
-    const firebaseKeys = new Set(firebaseMap.keys());
-    const unmatchedInCsv = Array.from(firebaseKeys).filter(k => !csvKeys.has(k));
-    const unmatchedInFirebase = Array.from(csvKeys).filter(k => !firebaseKeys.has(k));
-    
-    if (unmatchedInCsv.length > 0 && roleGroup === 'OTG') {
-      console.log(`[compareStatements] OTG: ${unmatchedInCsv.length} items in Firebase but not in CSV:`);
-      unmatchedInCsv.slice(0, 5).forEach(key => {
-        const item = firebaseMap.get(key);
-        if (item) {
-          console.log(`  - BillingItem=${item.otgCompBillingItem}, Account=${item.accountName}, OTG Comp=$${item.otgComp.toFixed(2)}, Seller Comp=$${item.sellerComp.toFixed(2)}`);
-        }
-      });
-    }
-    
-    if (unmatchedInFirebase.length > 0 && roleGroup === 'OTG') {
-      console.log(`[compareStatements] OTG: ${unmatchedInFirebase.length} items in CSV but not in Firebase:`);
-      unmatchedInFirebase.slice(0, 5).forEach(key => {
-        const item = csvMap.get(key);
-        if (item) {
-          console.log(`  - BillingItem=${item.otgCompBillingItem}, Account=${item.accountName}, OTG Comp=$${item.otgComp.toFixed(2)}, Seller Comp=$${item.sellerComp.toFixed(2)}`);
-        }
-      });
+      firebaseMap.set(createMatchKey(item), item);
     }
 
     // Find matched items (only items that exist in BOTH statements)
@@ -913,21 +837,6 @@ export const compareStatements = async (
     for (const [key, csvItem] of csvMap.entries()) {
       const firebaseItem = firebaseMap.get(key);
       if (firebaseItem) {
-        // Log all comparisons for OTG group to debug
-        if (roleGroup === 'OTG') {
-          console.log(`[OTG Compare] BillingItem=${csvItem.otgCompBillingItem}, Account=${csvItem.accountName}`);
-          console.log(`  CSV: otgComp=$${csvItem.otgComp.toFixed(2)}, sellerComp=$${csvItem.sellerComp.toFixed(2)}`);
-          console.log(`  Firebase: otgComp=$${firebaseItem.otgComp.toFixed(2)}, sellerComp=$${firebaseItem.sellerComp.toFixed(2)}`);
-          const otgDiff = Math.abs(csvItem.otgComp - firebaseItem.otgComp);
-          const sellerDiff = Math.abs(csvItem.sellerComp - firebaseItem.sellerComp);
-          console.log(`  Differences: otgComp=$${otgDiff.toFixed(2)}, sellerComp=$${sellerDiff.toFixed(2)}`);
-        }
-        
-        // Special logging for 23563802
-        if (csvItem.otgCompBillingItem === '23563802') {
-          console.log(`[23563802] Comparing in ${roleGroup}: CSV otgComp=${csvItem.otgComp}, sellerComp=${csvItem.sellerComp}, Firebase otgComp=${firebaseItem.otgComp}, sellerComp=${firebaseItem.sellerComp}`);
-        }
-        
         const itemDifferences = compareItems(csvItem, firebaseItem);
         if (itemDifferences.length === 0) {
           matched.push({ csv: csvItem, firebase: firebaseItem });
@@ -937,11 +846,6 @@ export const compareStatements = async (
             firebase: firebaseItem,
             differences: itemDifferences,
           });
-          
-          // Special logging for 23563802 differences
-          if (csvItem.otgCompBillingItem === '23563802') {
-            console.log(`[23563802] Differences found in ${roleGroup}:`, itemDifferences);
-          }
         }
         // Remove from both maps since we've processed this match
         firebaseMap.delete(key);
@@ -956,23 +860,36 @@ export const compareStatements = async (
     // Items in CSV but not in Firebase (remaining in csvMap after matching)
     const missingInFirebase: SellerStatementItem[] = Array.from(csvMap.values());
 
-    // Calculate totals from ALL items in each source (not just matched)
-    // CSV Total = ALL csvItems (matched + differences + missingInFirebase)
+    // Calculate totals from ALL items using rounded values (2 decimals).
+    // This keeps displayed totals in sync with row-level comparison (same round2 used in compareItems).
     const csvTotal = {
-      otgComp: csvItems.reduce((sum, item) => sum + item.otgComp, 0),
-      sellerComp: csvItems.reduce((sum, item) => sum + item.sellerComp, 0),
+      otgComp: csvItems.reduce((sum, item) => sum + round2(item.otgComp), 0),
+      sellerComp: csvItems.reduce((sum, item) => sum + round2(item.sellerComp), 0),
     };
 
-    // Firebase Total = ALL firebaseItems (matched + differences + missingInCsv)
     const firebaseTotal = {
-      otgComp: firebaseItems.reduce((sum, item) => sum + item.otgComp, 0),
-      sellerComp: firebaseItems.reduce((sum, item) => sum + item.sellerComp, 0),
+      otgComp: firebaseItems.reduce((sum, item) => sum + round2(item.otgComp), 0),
+      sellerComp: firebaseItems.reduce((sum, item) => sum + round2(item.sellerComp), 0),
     };
 
     const difference = {
-      otgComp: csvTotal.otgComp - firebaseTotal.otgComp,
-      sellerComp: csvTotal.sellerComp - firebaseTotal.sellerComp,
+      otgComp: round2(csvTotal.otgComp - firebaseTotal.otgComp),
+      sellerComp: round2(csvTotal.sellerComp - firebaseTotal.sellerComp),
     };
+
+    // RM1/2 only: log every line item and totals from XLSX and from Firebase
+    if (roleGroup === 'RM1/2') {
+      console.log('[RM1/2 XLSX] Line items:', csvItems.length);
+      csvItems.forEach((item, i) => {
+        console.log(`  [${i + 1}] BillingItem=${item.otgCompBillingItem}, Account=${item.accountName}, otgComp=${item.otgComp}, sellerComp=${item.sellerComp}`);
+      });
+      console.log('[RM1/2 XLSX] Totals: otgComp=', csvTotal.otgComp, ', sellerComp=', csvTotal.sellerComp);
+      console.log('[RM1/2 Firebase] Line items:', firebaseItems.length);
+      firebaseItems.forEach((item, i) => {
+        console.log(`  [${i + 1}] BillingItem=${item.otgCompBillingItem}, Account=${item.accountName}, otgComp=${item.otgComp}, sellerComp=${item.sellerComp}`);
+      });
+      console.log('[RM1/2 Firebase] Totals: otgComp=', firebaseTotal.otgComp, ', sellerComp=', firebaseTotal.sellerComp);
+    }
 
     roleGroups.push({
       roleGroup,
@@ -986,25 +903,11 @@ export const compareStatements = async (
     });
   }
 
-  // Calculate summary
   const summary = {
     totalMatched: roleGroups.reduce((sum, rg) => sum + rg.matched.length, 0),
     totalDifferences: roleGroups.reduce((sum, rg) => sum + rg.differences.length, 0),
     totalCompared: roleGroups.reduce((sum, rg) => sum + rg.matched.length + rg.differences.length, 0),
   };
-
-  // Log summary by role group
-  console.log(`\n[compareStatements] ========== COMPARISON SUMMARY ==========`);
-  roleGroups.forEach(rg => {
-    console.log(`${rg.roleGroup}: ${rg.matched.length} matched, ${rg.differences.length} differences`);
-    if (rg.differences.length > 0) {
-      console.log(`  CSV Total: OTG Comp=$${rg.csvTotal.otgComp.toFixed(2)}, Seller Comp=$${rg.csvTotal.sellerComp.toFixed(2)}`);
-      console.log(`  Firebase Total: OTG Comp=$${rg.firebaseTotal.otgComp.toFixed(2)}, Seller Comp=$${rg.firebaseTotal.sellerComp.toFixed(2)}`);
-      console.log(`  Difference: OTG Comp=$${rg.difference.otgComp.toFixed(2)}, Seller Comp=$${rg.difference.sellerComp.toFixed(2)}`);
-    }
-  });
-  console.log(`Overall: ${summary.totalMatched} matched, ${summary.totalDifferences} differences, ${summary.totalCompared} compared`);
-  console.log(`[compareStatements] =========================================\n`);
 
   return {
     processingMonth,
