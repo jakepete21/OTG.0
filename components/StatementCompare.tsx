@@ -1,321 +1,531 @@
-import React, { useState, useMemo } from 'react';
-import { Upload, FileText, AlertCircle, CheckCircle, XCircle, Download } from 'lucide-react';
-import { useSellerStatements, useProcessingMonths } from '../services/firebaseHooks';
-import { parseCsvToSellerStatements, compareStatements, StatementComparison } from '../services/statementComparisonService';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Upload, FileText, AlertCircle, CheckCircle, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { parseUploadedStatements, parseRawDataWithRoleGroup, compareStatements, ComparisonResult, ParsedStatements } from '../services/statementComparisonService';
+import { useSellerStatements } from '../services/firebaseHooks';
+import { useProcessingMonths } from '../services/firebaseHooks';
+import { SellerStatement } from '../types';
 import { formatCurrency } from '../services/numberFormat';
-import * as XLSX from 'xlsx';
 
-interface StatementCompareProps {
-  // No props needed - component is self-contained
-}
-
-const StatementCompare: React.FC<StatementCompareProps> = () => {
+const StatementCompare: React.FC = () => {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [csvStatements, setCsvStatements] = useState<any[]>([]);
-  const [selectedMonth, setSelectedMonth] = useState<string>('');
-  const [comparison, setComparison] = useState<StatementComparison | null>(null);
+  const [parsedStatements, setParsedStatements] = useState<ParsedStatements | null>(null);
+  const [selectedProcessingMonth, setSelectedProcessingMonth] = useState<string>('');
+  const [comparisonResult, setComparisonResult] = useState<ComparisonResult | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+  const [expandedRoleGroups, setExpandedRoleGroups] = useState<Set<string>>(new Set());
+  const [showMatchedItems, setShowMatchedItems] = useState<boolean>(false);
+  const [unparsedData, setUnparsedData] = useState<{ headers: string[]; rows: any[] } | null>(null);
+  const [selectedRoleGroupForCsv, setSelectedRoleGroupForCsv] = useState<string>('');
+
+  // Get processing months and seller statements
   const processingMonths = useProcessingMonths();
-  const firebaseStatementsDocs = useSellerStatements(selectedMonth);
-  
-  // Convert Firebase docs to SellerStatement format
-  const firebaseStatements = useMemo(() => {
-    return firebaseStatementsDocs.map(doc => ({
-      roleGroup: doc.roleGroup,
-      items: doc.items || [],
-      totalOtgComp: doc.totalOtgComp || 0,
-      totalSellerComp: doc.totalSellerComp || 0,
+  const firebaseStatements = useSellerStatements(selectedProcessingMonth || null);
+
+  // Convert Firebase statements to SellerStatement[] format
+  const sellerStatements: SellerStatement[] = useMemo(() => {
+    return firebaseStatements.map(stmt => ({
+      roleGroup: stmt.roleGroup,
+      items: stmt.items,
+      totalOtgComp: stmt.totalOtgComp,
+      totalSellerComp: stmt.totalSellerComp,
     }));
-  }, [firebaseStatementsDocs]);
-  
-  const handleFileUpload = async (file: File) => {
-    setIsProcessing(true);
+  }, [firebaseStatements]);
+
+  // Auto-compare when seller statements load (if file and month are already selected)
+  useEffect(() => {
+    if (parsedStatements && selectedProcessingMonth && sellerStatements.length > 0) {
+      (async () => {
+        const result = await compareStatements(parsedStatements, sellerStatements, selectedProcessingMonth);
+        setComparisonResult(result);
+      })();
+    }
+  }, [parsedStatements, selectedProcessingMonth, sellerStatements]);
+
+  // Handle file upload
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
     setError(null);
+    setIsProcessing(true);
     setUploadedFile(file);
-    
+    setParsedStatements(null);
+    setComparisonResult(null);
+    setUnparsedData(null);
+    setSelectedRoleGroupForCsv('');
+
     try {
-      const parsed = await parseCsvToSellerStatements(file);
-      setCsvStatements(parsed);
+      const result = await parseUploadedStatements(file);
+      
+      if (result.needsManualRoleGroup) {
+        // Need manual role group selection
+        setUnparsedData(result.needsManualRoleGroup);
+        setError('No role group detected. Please select a role group for this CSV file.');
+      } else {
+        // Data was parsed successfully
+        const hasData = Object.keys(result.parsed).length > 0 && 
+          Object.values(result.parsed).some(items => items.length > 0);
+        
+        if (hasData) {
+          setParsedStatements(result.parsed);
+          setError(null);
+          // Auto-compare will happen via useEffect when sellerStatements are loaded
+        } else {
+          setError('File appears to be empty or no valid data found.');
+        }
+      }
     } catch (err: any) {
       setError(`Failed to parse file: ${err.message}`);
+      console.error('[StatementCompare] Parse error:', err);
+    } finally {
       setIsProcessing(false);
     }
   };
-  
-  const handleCompare = () => {
-    if (!selectedMonth) {
-      setError('Please select a processing month');
+
+  // Handle manual role group assignment for CSV
+  const handleAssignRoleGroup = async () => {
+    if (!unparsedData || !selectedRoleGroupForCsv) {
+      setError('Please select a role group');
       return;
     }
-    
-    if (csvStatements.length === 0) {
-      setError('Please upload a CSV file first');
-      return;
-    }
-    
+
+    setIsProcessing(true);
+    setError(null);
+
     try {
-      const result = compareStatements(csvStatements, firebaseStatements, selectedMonth);
-      setComparison(result);
+      const parsed = await parseRawDataWithRoleGroup(
+        unparsedData.headers,
+        unparsedData.rows,
+        selectedRoleGroupForCsv
+      );
+
+      const hasData = Object.values(parsed).some(items => items.length > 0);
+      if (!hasData) {
+        setError('No valid rows found. Please check your CSV columns match the expected format.');
+        return;
+      }
+
+      setParsedStatements(parsed);
+      setUnparsedData(null);
+      setSelectedRoleGroupForCsv('');
       setError(null);
     } catch (err: any) {
-      setError(`Comparison failed: ${err.message}`);
+      setError(`Failed to parse data: ${err.message}`);
+      console.error('[StatementCompare] Parse error:', err);
+    } finally {
+      setIsProcessing(false);
     }
   };
-  
-  const handleExportComparison = () => {
-    if (!comparison) return;
-    
-    const workbook = XLSX.utils.book_new();
-    
-    comparison.roleGroups.forEach(group => {
-      const rows: any[][] = [
-        ['Role Group', group.roleGroup],
-        ['CSV Total OTG Comp', group.csvTotalOtgComp],
-        ['CSV Total Seller Comp', group.csvTotalSellerComp],
-        ['Firebase Total OTG Comp', group.firebaseTotalOtgComp],
-        ['Firebase Total Seller Comp', group.firebaseTotalSellerComp],
-        ['OTG Comp Difference', group.otgCompDiff],
-        ['Seller Comp Difference', group.sellerCompDiff],
-        [],
-        ['Account Name', 'OTG Comp Billing Item', 'CSV OTG Comp', 'CSV Seller Comp', 'Firebase OTG Comp', 'Firebase Seller Comp', 'OTG Comp Diff', 'Seller Comp Diff', 'Status'],
-      ];
-      
-      group.items.forEach(item => {
-        rows.push([
-          item.accountName,
-          item.otgCompBillingItem,
-          item.csvOtgComp,
-          item.csvSellerComp,
-          item.firebaseOtgComp,
-          item.firebaseSellerComp,
-          item.otgCompDiff,
-          item.sellerCompDiff,
-          item.status,
-        ]);
-      });
-      
-      const worksheet = XLSX.utils.aoa_to_sheet(rows);
-      XLSX.utils.book_append_sheet(workbook, worksheet, group.roleGroup);
-    });
-    
-    // Summary sheet
-    const summaryRows: any[][] = [
-      ['Processing Month', comparison.processingMonth],
-      [],
-      ['Overall CSV Total OTG Comp', comparison.overallCsvTotalOtgComp],
-      ['Overall CSV Total Seller Comp', comparison.overallCsvTotalSellerComp],
-      ['Overall Firebase Total OTG Comp', comparison.overallFirebaseTotalOtgComp],
-      ['Overall Firebase Total Seller Comp', comparison.overallFirebaseTotalSellerComp],
-      ['Overall OTG Comp Difference', comparison.overallOtgCompDiff],
-      ['Overall Seller Comp Difference', comparison.overallSellerCompDiff],
-    ];
-    
-    const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
-    XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary');
-    
-    XLSX.writeFile(workbook, `statement-comparison-${comparison.processingMonth}.xlsx`);
+
+  // Handle processing month selection
+  const handleMonthSelect = (monthKey: string) => {
+    setSelectedProcessingMonth(monthKey);
+    setComparisonResult(null);
+    // Auto-compare will happen via useEffect when sellerStatements are loaded
   };
-  
+
+  // Trigger comparison manually
+  const handleCompare = async () => {
+    if (!parsedStatements || !selectedProcessingMonth) {
+      setError('Please upload a file and select a processing month');
+      return;
+    }
+
+    if (sellerStatements.length === 0) {
+      setError('No seller statements found for selected month');
+      return;
+    }
+
+    setError(null);
+    setIsProcessing(true);
+    try {
+      const result = await compareStatements(parsedStatements, sellerStatements, selectedProcessingMonth);
+      setComparisonResult(result);
+    } catch (error: any) {
+      setError(`Comparison failed: ${error.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Toggle role group expansion
+  const toggleRoleGroup = (roleGroup: string) => {
+    const newExpanded = new Set(expandedRoleGroups);
+    if (newExpanded.has(roleGroup)) {
+      newExpanded.delete(roleGroup);
+    } else {
+      newExpanded.add(roleGroup);
+    }
+    setExpandedRoleGroups(newExpanded);
+  };
+
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold text-slate-800">Statement Compare</h2>
-        <p className="text-slate-500 mt-1">Compare uploaded CSV/XLSX seller statements with Firebase seller statements</p>
+        <h1 className="text-2xl font-bold text-slate-900">Statement Compare</h1>
+        <p className="text-slate-600 mt-1">
+          Upload seller statement CSV/XLSX and compare against Firebase seller statements
+        </p>
       </div>
-      
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center gap-2">
-          <AlertCircle className="text-red-600" size={20} />
-          <span className="text-red-800">{error}</span>
-        </div>
-      )}
-      
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
-            Upload CSV/XLSX File
-          </label>
-          <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center">
+
+      {/* File Upload Section */}
+      <div className="bg-white rounded-lg border border-slate-200 p-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-4">Upload Statement File</h2>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg cursor-pointer hover:bg-indigo-700 transition-colors">
+            <Upload size={18} />
+            <span>Choose File</span>
             <input
               type="file"
               accept=".csv,.xlsx,.xls"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  handleFileUpload(file);
-                  setIsProcessing(false);
-                }
-              }}
+              onChange={handleFileUpload}
               className="hidden"
-              id="file-upload"
+              disabled={isProcessing}
             />
-            <label
-              htmlFor="file-upload"
-              className="cursor-pointer flex flex-col items-center gap-2"
-            >
-              <Upload className="text-slate-400" size={32} />
-              <span className="text-sm text-slate-600">
-                {uploadedFile ? uploadedFile.name : 'Click to upload CSV/XLSX file'}
-              </span>
-            </label>
-          </div>
-          {csvStatements.length > 0 && (
-            <p className="text-sm text-green-600 mt-2">
-              ✓ Parsed {csvStatements.length} role group(s) from CSV
-            </p>
+          </label>
+          {uploadedFile && (
+            <div className="flex items-center gap-2 text-slate-600">
+              <FileText size={18} />
+              <span>{uploadedFile.name}</span>
+            </div>
+          )}
+          {isProcessing && (
+            <div className="text-slate-500">Processing...</div>
           )}
         </div>
-        
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">
-            Select Processing Month
-          </label>
-          <select
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
-            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-          >
-            <option value="">Select a month...</option>
-            {processingMonths.map(month => (
-              <option key={month.monthKey} value={month.monthKey}>
-                {month.monthLabel}
-              </option>
-            ))}
-          </select>
-        </div>
-        
-        <button
-          onClick={handleCompare}
-          disabled={!selectedMonth || csvStatements.length === 0 || isProcessing}
-          className="w-full px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-        >
-          <FileText size={18} />
-          {isProcessing ? 'Processing...' : 'Compare Statements'}
-        </button>
+        {parsedStatements && (
+          <div className="mt-4 text-sm text-slate-600">
+            Parsed {Object.keys(parsedStatements).length} role group(s): {Object.keys(parsedStatements).join(', ')}
+          </div>
+        )}
       </div>
-      
-      {comparison && (
-        <div className="space-y-4">
-          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-slate-800">Comparison Summary</h3>
-              <button
-                onClick={handleExportComparison}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 flex items-center gap-2"
-              >
-                <Download size={16} />
-                Export Comparison
-              </button>
+
+      {/* Manual Role Group Selection (for files without role group detection) */}
+      {unparsedData && (
+        <div className="bg-white rounded-lg border border-amber-200 p-6">
+          <h2 className="text-lg font-semibold text-amber-900 mb-4">
+            Select Role Group for File
+          </h2>
+          <p className="text-sm text-slate-600 mb-4">
+            No role group was detected from your file. Please select which role group this file belongs to.
+            <br />
+            Found {unparsedData.rows.length} rows with columns: {unparsedData.headers.slice(0, 5).join(', ')}{unparsedData.headers.length > 5 ? '...' : ''}
+            <br />
+            <span className="text-xs text-slate-500 mt-2 block">
+              Tip: For XLSX files, name your tabs after role groups (e.g., "RD1/2", "RD3/4"). 
+              For CSV files, add a "Role Group" column with values like "RD1/2", "RD3/4", etc.
+            </span>
+          </p>
+          <div className="flex items-center gap-4">
+            <select
+              value={selectedRoleGroupForCsv}
+              onChange={(e) => setSelectedRoleGroupForCsv(e.target.value)}
+              className="px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            >
+              <option value="">Select role group...</option>
+              <option value="RD1/2">RD1/2</option>
+              <option value="RD3/4">RD3/4</option>
+              <option value="RM1/2">RM1/2</option>
+              <option value="RM3/4">RM3/4</option>
+              <option value="OVR/RD5">OVR/RD5</option>
+              <option value="OTG">OTG</option>
+            </select>
+            <button
+              onClick={handleAssignRoleGroup}
+              disabled={!selectedRoleGroupForCsv}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+            >
+              Assign Role Group
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Processing Month Selector */}
+      <div className="bg-white rounded-lg border border-slate-200 p-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-4">Select Processing Month</h2>
+        <select
+          value={selectedProcessingMonth}
+          onChange={(e) => handleMonthSelect(e.target.value)}
+          className="w-full md:w-64 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+        >
+          <option value="">Select a month...</option>
+          {processingMonths.map((month) => (
+            <option key={month.monthKey} value={month.monthKey}>
+              {month.monthLabel} ({month.status})
+            </option>
+          ))}
+        </select>
+        {selectedProcessingMonth && sellerStatements.length === 0 && (
+          <div className="mt-2 text-sm text-amber-600">
+            No seller statements found for this month
+          </div>
+        )}
+      </div>
+
+      {/* Error Display */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center gap-2 text-red-700">
+          <AlertCircle size={20} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Comparison Results */}
+      {comparisonResult && (
+        <div className="space-y-6">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white rounded-lg border border-slate-200 p-4">
+              <div className="text-sm text-slate-600">Total Compared</div>
+              <div className="text-2xl font-bold text-slate-700 mt-1">
+                {comparisonResult.summary.totalCompared}
+              </div>
+              <div className="text-xs text-slate-500 mt-1">Items on both statements</div>
             </div>
-            
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-slate-50 rounded-lg p-4">
-                <div className="text-sm text-slate-600">CSV Total OTG Comp</div>
-                <div className="text-xl font-bold text-slate-800">{formatCurrency(comparison.overallCsvTotalOtgComp)}</div>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-4">
-                <div className="text-sm text-slate-600">Firebase Total OTG Comp</div>
-                <div className="text-xl font-bold text-slate-800">{formatCurrency(comparison.overallFirebaseTotalOtgComp)}</div>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-4">
-                <div className="text-sm text-slate-600">CSV Total Seller Comp</div>
-                <div className="text-xl font-bold text-slate-800">{formatCurrency(comparison.overallCsvTotalSellerComp)}</div>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-4">
-                <div className="text-sm text-slate-600">Firebase Total Seller Comp</div>
-                <div className="text-xl font-bold text-slate-800">{formatCurrency(comparison.overallFirebaseTotalSellerComp)}</div>
+            <div className="bg-white rounded-lg border border-slate-200 p-4">
+              <div className="text-sm text-slate-600">Matched (No Differences)</div>
+              <div className="text-2xl font-bold text-green-600 mt-1">
+                {comparisonResult.summary.totalMatched}
               </div>
             </div>
-            
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div className={`rounded-lg p-4 ${comparison.overallOtgCompDiff === 0 ? 'bg-green-50' : 'bg-amber-50'}`}>
-                <div className="text-sm text-slate-600">OTG Comp Difference</div>
-                <div className={`text-xl font-bold ${comparison.overallOtgCompDiff === 0 ? 'text-green-700' : 'text-amber-700'}`}>
-                  {formatCurrency(comparison.overallOtgCompDiff)}
-                </div>
-              </div>
-              <div className={`rounded-lg p-4 ${comparison.overallSellerCompDiff === 0 ? 'bg-green-50' : 'bg-amber-50'}`}>
-                <div className="text-sm text-slate-600">Seller Comp Difference</div>
-                <div className={`text-xl font-bold ${comparison.overallSellerCompDiff === 0 ? 'text-green-700' : 'text-amber-700'}`}>
-                  {formatCurrency(comparison.overallSellerCompDiff)}
-                </div>
+            <div className="bg-white rounded-lg border border-slate-200 p-4">
+              <div className="text-sm text-slate-600">Differences Found</div>
+              <div className="text-2xl font-bold text-red-600 mt-1">
+                {comparisonResult.summary.totalDifferences}
               </div>
             </div>
           </div>
-          
-          {comparison.roleGroups.map(group => (
-            <div key={group.roleGroup} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-              <div className="p-4 bg-slate-50 border-b border-slate-200">
-                <h4 className="font-bold text-slate-800">{group.roleGroup}</h4>
-                <div className="flex gap-4 mt-2 text-sm">
-                  <span className="text-green-600">✓ Matches: {group.matchCount}</span>
-                  <span className="text-blue-600">CSV Only: {group.csvOnlyCount}</span>
-                  <span className="text-purple-600">Firebase Only: {group.firebaseOnlyCount}</span>
-                  <span className="text-amber-600">Differences: {group.differenceCount}</span>
+
+          {/* Show Matched Items Toggle */}
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="showMatched"
+              checked={showMatchedItems}
+              onChange={(e) => setShowMatchedItems(e.target.checked)}
+              className="w-4 h-4 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500"
+            />
+            <label htmlFor="showMatched" className="text-sm text-slate-600 cursor-pointer">
+              Show matched items (no differences)
+            </label>
+          </div>
+
+          {/* Role Group Comparisons */}
+          {comparisonResult.roleGroups.map((rg) => {
+            const isExpanded = expandedRoleGroups.has(rg.roleGroup);
+            const hasIssues = rg.differences.length > 0 || rg.missingInCsv.length > 0 || rg.missingInFirebase.length > 0;
+            const totalCompared = rg.matched.length + rg.differences.length;
+
+            return (
+              <div key={rg.roleGroup} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                {/* Role Group Header */}
+                <button
+                  onClick={() => toggleRoleGroup(rg.roleGroup)}
+                  className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    {hasIssues ? (
+                      <XCircle size={20} className="text-red-500" />
+                    ) : (
+                      <CheckCircle size={20} className="text-green-500" />
+                    )}
+                    <span className="font-semibold text-slate-900">{rg.roleGroup}</span>
+                    <span className="text-sm text-slate-500">
+                      ({totalCompared} compared: {rg.matched.length} matched, {rg.differences.length} differences)
+                    </span>
+                  </div>
+                  {isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                </button>
+
+                {/* Totals Summary */}
+                <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <div className="text-slate-600">CSV OTG Comp</div>
+                    <div className="font-semibold">{formatCurrency(rg.csvTotal.otgComp)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-600">Firebase OTG Comp</div>
+                    <div className="font-semibold">{formatCurrency(rg.firebaseTotal.otgComp)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-600">CSV Seller Comp</div>
+                    <div className="font-semibold">{formatCurrency(rg.csvTotal.sellerComp)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-600">Firebase Seller Comp</div>
+                    <div className="font-semibold">{formatCurrency(rg.firebaseTotal.sellerComp)}</div>
+                  </div>
+                  {(rg.difference.otgComp !== 0 || rg.difference.sellerComp !== 0) && (
+                    <div className="col-span-2 md:col-span-4 mt-2 pt-2 border-t border-slate-300">
+                      <div className="text-red-600 font-semibold">
+                        Difference: OTG {formatCurrency(rg.difference.otgComp)}, Seller {formatCurrency(rg.difference.sellerComp)}
+                      </div>
+                    </div>
+                  )}
                 </div>
+
+                {/* Expanded Content */}
+                {isExpanded && (
+                  <div className="px-6 py-4 space-y-4">
+                    {/* Matched Items */}
+                    {showMatchedItems && rg.matched.length > 0 && (
+                      <div>
+                        <h4 className="font-semibold text-green-700 mb-2">
+                          Matched Items ({rg.matched.length})
+                        </h4>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-slate-50">
+                              <tr>
+                                <th className="px-3 py-2 text-left">Billing Item</th>
+                                <th className="px-3 py-2 text-left">Account Name</th>
+                                <th className="px-3 py-2 text-right">OTG Comp</th>
+                                <th className="px-3 py-2 text-right">Seller Comp</th>
+                                <th className="px-3 py-2 text-left">State</th>
+                                <th className="px-3 py-2 text-left">Provider</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rg.matched.map((match, idx) => (
+                                <tr key={idx} className="border-t border-slate-100">
+                                  <td className="px-3 py-2">{match.csv.otgCompBillingItem}</td>
+                                  <td className="px-3 py-2">{match.csv.accountName}</td>
+                                  <td className="px-3 py-2 text-right">{formatCurrency(match.csv.otgComp)}</td>
+                                  <td className="px-3 py-2 text-right">{formatCurrency(match.csv.sellerComp)}</td>
+                                  <td className="px-3 py-2">{match.csv.state}</td>
+                                  <td className="px-3 py-2">{match.csv.provider}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Differences */}
+                    {rg.differences.length > 0 && (
+                      <div>
+                        <h4 className="font-semibold text-red-700 mb-2">
+                          Differences ({rg.differences.length})
+                        </h4>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-red-50">
+                              <tr>
+                                <th className="px-3 py-2 text-left">Billing Item</th>
+                                <th className="px-3 py-2 text-left">Account Name</th>
+                                <th className="px-3 py-2 text-right">Field</th>
+                                <th className="px-3 py-2 text-right">CSV Value</th>
+                                <th className="px-3 py-2 text-right">Firebase Value</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rg.differences.map((diff, idx) => (
+                                <React.Fragment key={idx}>
+                                  {diff.differences.map((d, dIdx) => (
+                                    <tr key={`${idx}-${dIdx}`} className="border-t border-red-100 bg-red-50">
+                                      <td className="px-3 py-2">{diff.csv.otgCompBillingItem}</td>
+                                      <td className="px-3 py-2">{diff.csv.accountName}</td>
+                                      <td className="px-3 py-2 font-semibold text-red-700">{d.field}</td>
+                                      <td className="px-3 py-2 text-right">
+                                        {typeof d.csvValue === 'number' ? formatCurrency(d.csvValue) : String(d.csvValue)}
+                                      </td>
+                                      <td className="px-3 py-2 text-right">
+                                        {typeof d.firebaseValue === 'number' ? formatCurrency(d.firebaseValue) : String(d.firebaseValue)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </React.Fragment>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Missing in CSV (items in Firebase but not CSV) */}
+                    {rg.missingInCsv.length > 0 && (
+                      <div>
+                        <h4 className="font-semibold text-amber-700 mb-2">
+                          Missing in CSV ({rg.missingInCsv.length})
+                        </h4>
+                        <p className="text-sm text-slate-600 mb-2">
+                          Items found in Firebase seller statements but not in uploaded CSV
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-amber-50">
+                              <tr>
+                                <th className="px-3 py-2 text-left">Billing Item</th>
+                                <th className="px-3 py-2 text-left">Account Name</th>
+                                <th className="px-3 py-2 text-right">OTG Comp</th>
+                                <th className="px-3 py-2 text-right">Seller Comp</th>
+                                <th className="px-3 py-2 text-left">State</th>
+                                <th className="px-3 py-2 text-left">Provider</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rg.missingInCsv.map((item, idx) => (
+                                <tr key={idx} className="border-t border-amber-100 bg-amber-50">
+                                  <td className="px-3 py-2">{item.otgCompBillingItem}</td>
+                                  <td className="px-3 py-2">{item.accountName}</td>
+                                  <td className="px-3 py-2 text-right">{formatCurrency(item.otgComp)}</td>
+                                  <td className="px-3 py-2 text-right">{formatCurrency(item.sellerComp)}</td>
+                                  <td className="px-3 py-2">{item.state}</td>
+                                  <td className="px-3 py-2">{item.provider}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Missing in Firebase (items in CSV but not Firebase) */}
+                    {rg.missingInFirebase.length > 0 && (
+                      <div>
+                        <h4 className="font-semibold text-blue-700 mb-2">
+                          Missing in Firebase ({rg.missingInFirebase.length})
+                        </h4>
+                        <p className="text-sm text-slate-600 mb-2">
+                          Items found in uploaded CSV but not in Firebase seller statements
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-blue-50">
+                              <tr>
+                                <th className="px-3 py-2 text-left">Billing Item</th>
+                                <th className="px-3 py-2 text-left">Account Name</th>
+                                <th className="px-3 py-2 text-right">OTG Comp</th>
+                                <th className="px-3 py-2 text-right">Seller Comp</th>
+                                <th className="px-3 py-2 text-left">State</th>
+                                <th className="px-3 py-2 text-left">Provider</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rg.missingInFirebase.map((item, idx) => (
+                                <tr key={idx} className="border-t border-blue-100 bg-blue-50">
+                                  <td className="px-3 py-2">{item.otgCompBillingItem}</td>
+                                  <td className="px-3 py-2">{item.accountName}</td>
+                                  <td className="px-3 py-2 text-right">{formatCurrency(item.otgComp)}</td>
+                                  <td className="px-3 py-2 text-right">{formatCurrency(item.sellerComp)}</td>
+                                  <td className="px-3 py-2">{item.state}</td>
+                                  <td className="px-3 py-2">{item.provider}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+                )}
               </div>
-              
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-slate-700">Account Name</th>
-                      <th className="px-4 py-2 text-left text-sm font-medium text-slate-700">Billing Item</th>
-                      <th className="px-4 py-2 text-right text-sm font-medium text-slate-700">CSV OTG Comp</th>
-                      <th className="px-4 py-2 text-right text-sm font-medium text-slate-700">CSV Seller Comp</th>
-                      <th className="px-4 py-2 text-right text-sm font-medium text-slate-700">Firebase OTG Comp</th>
-                      <th className="px-4 py-2 text-right text-sm font-medium text-slate-700">Firebase Seller Comp</th>
-                      <th className="px-4 py-2 text-right text-sm font-medium text-slate-700">OTG Diff</th>
-                      <th className="px-4 py-2 text-right text-sm font-medium text-slate-700">Seller Diff</th>
-                      <th className="px-4 py-2 text-center text-sm font-medium text-slate-700">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {group.items.map((item, idx) => (
-                      <tr key={idx} className={item.status === 'match' ? 'bg-green-50' : item.status === 'difference' ? 'bg-amber-50' : ''}>
-                        <td className="px-4 py-2 text-sm text-slate-800">{item.accountName}</td>
-                        <td className="px-4 py-2 text-sm text-slate-600">{item.otgCompBillingItem}</td>
-                        <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(item.csvOtgComp)}</td>
-                        <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(item.csvSellerComp)}</td>
-                        <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(item.firebaseOtgComp)}</td>
-                        <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(item.firebaseSellerComp)}</td>
-                        <td className={`px-4 py-2 text-sm text-right font-medium ${item.otgCompDiff === 0 ? 'text-green-600' : 'text-amber-600'}`}>
-                          {formatCurrency(item.otgCompDiff)}
-                        </td>
-                        <td className={`px-4 py-2 text-sm text-right font-medium ${item.sellerCompDiff === 0 ? 'text-green-600' : 'text-amber-600'}`}>
-                          {formatCurrency(item.sellerCompDiff)}
-                        </td>
-                        <td className="px-4 py-2 text-center">
-                          {item.status === 'match' && <CheckCircle className="text-green-600 inline" size={16} />}
-                          {item.status === 'difference' && <AlertCircle className="text-amber-600 inline" size={16} />}
-                          {item.status === 'csv_only' && <XCircle className="text-blue-600 inline" size={16} />}
-                          {item.status === 'firebase_only' && <XCircle className="text-purple-600 inline" size={16} />}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot className="bg-slate-50 font-bold">
-                    <tr>
-                      <td colSpan={2} className="px-4 py-2 text-sm text-slate-800">Totals</td>
-                      <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(group.csvTotalOtgComp)}</td>
-                      <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(group.csvTotalSellerComp)}</td>
-                      <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(group.firebaseTotalOtgComp)}</td>
-                      <td className="px-4 py-2 text-sm text-right text-slate-800">{formatCurrency(group.firebaseTotalSellerComp)}</td>
-                      <td className={`px-4 py-2 text-sm text-right ${group.otgCompDiff === 0 ? 'text-green-600' : 'text-amber-600'}`}>
-                        {formatCurrency(group.otgCompDiff)}
-                      </td>
-                      <td className={`px-4 py-2 text-sm text-right ${group.sellerCompDiff === 0 ? 'text-green-600' : 'text-amber-600'}`}>
-                        {formatCurrency(group.sellerCompDiff)}
-                      </td>
-                      <td></td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

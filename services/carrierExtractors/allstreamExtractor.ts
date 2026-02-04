@@ -5,19 +5,7 @@
 
 import * as XLSX from 'xlsx';
 import { CarrierStatementRow } from '../../types';
-
-/**
- * Parses currency string to number
- */
-const parseCurrency = (val: any): number => {
-  if (typeof val === 'number') return val;
-  if (!val) return 0;
-  const str = String(val).replace(/[\$,()]/g, '').trim();
-  if (str.startsWith('-') || str.startsWith('(')) {
-    return -Math.abs(parseFloat(str.replace(/[^0-9.]/g, '')) || 0);
-  }
-  return parseFloat(str.replace(/[^0-9.]/g, '')) || 0;
-};
+import { parseCurrency } from '../numberFormat';
 
 /**
  * Normalizes header name for matching
@@ -74,7 +62,7 @@ const processOneTelHRTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] =>
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   const rows: CarrierStatementRow[] = [];
@@ -122,7 +110,7 @@ const processOneTelHTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] => 
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   const rows: CarrierStatementRow[] = [];

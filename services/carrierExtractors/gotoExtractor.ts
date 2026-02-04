@@ -5,19 +5,7 @@
 
 import * as XLSX from 'xlsx';
 import { CarrierStatementRow } from '../../types';
-
-/**
- * Parses currency string to number
- */
-const parseCurrency = (val: any): number => {
-  if (typeof val === 'number') return val;
-  if (!val) return 0;
-  const str = String(val).replace(/[\$,()]/g, '').trim();
-  if (str.startsWith('-') || str.startsWith('(')) {
-    return -Math.abs(parseFloat(str.replace(/[^0-9.]/g, '')) || 0);
-  }
-  return parseFloat(str.replace(/[^0-9.]/g, '')) || 0;
-};
+import { parseCurrency } from '../numberFormat';
 
 /**
  * Special commission adjustment rule: CN-568463-1409 → subtract 118.29
@@ -39,7 +27,7 @@ const processDataTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] => {
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   const rows: CarrierStatementRow[] = [];
@@ -92,7 +80,7 @@ const processEquipmentTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] =
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   // Group by billing item (Column I, index 8)
@@ -160,7 +148,7 @@ const processOneTimeTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] => 
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   const rows: CarrierStatementRow[] = [];
@@ -203,7 +191,7 @@ const processCanceledTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] =>
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   const rows: CarrierStatementRow[] = [];
@@ -241,7 +229,7 @@ const processAssistTab = (worksheet: XLSX.WorkSheet): CarrierStatementRow[] => {
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   const rows: CarrierStatementRow[] = [];
@@ -287,7 +275,7 @@ const processSectionBasedTab = (
   const data = XLSX.utils.sheet_to_json(worksheet, { 
     header: 1, 
     defval: '', 
-    raw: false 
+    raw: true 
   }) as any[][];
   
   const rows: CarrierStatementRow[] = [];

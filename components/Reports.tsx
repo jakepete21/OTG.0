@@ -299,20 +299,55 @@ const MonthSection: React.FC<MonthSectionProps> = ({
       statements = optimisticSellerStatements.filteredStatements;
     }
 
-    // Deduplicate statements with the same roleGroup by merging them
+    // Deduplicate statements with the same roleGroup by merging them properly
+    // IMPORTANT: If duplicate documents exist, merge items by key (billingItem|accountName)
+    // to avoid double-counting the same items
     const deduplicated = new Map<string, SellerStatement>();
     statements.forEach((stmt) => {
       const existing = deduplicated.get(stmt.roleGroup);
       if (existing) {
-        console.warn(`[Reports] ⚠️ Merging duplicate roleGroup ${stmt.roleGroup}`);
+        console.warn(`[Reports] ⚠️ Duplicate roleGroup ${stmt.roleGroup} detected - merging items by key to prevent double-counting`);
         
-        // Merge: combine items and recalculate totals
-        const mergedItems = [...existing.items, ...stmt.items];
+        // Create a map of existing items by key (billingItem|accountName)
+        const existingItemsMap = new Map<string, any>();
+        existing.items.forEach((item: any) => {
+          const key = `${item.otgCompBillingItem}|${item.accountName}`;
+          existingItemsMap.set(key, item);
+        });
+        
+        // Merge new items with existing items by key
+        const mergedItems: any[] = [...existing.items];
+        stmt.items.forEach((newItem: any) => {
+          const key = `${newItem.otgCompBillingItem}|${newItem.accountName}`;
+          const existingItem = existingItemsMap.get(key);
+          
+          if (existingItem) {
+            // Item already exists - check if values match
+            const otgMatch = Math.abs((existingItem.otgComp || 0) - (newItem.otgComp || 0)) < 0.01;
+            const sellerMatch = Math.abs((existingItem.sellerComp || 0) - (newItem.sellerComp || 0)) < 0.01;
+            
+            if (!otgMatch || !sellerMatch) {
+              console.warn(`[Reports] ⚠️ Duplicate item "${key}" has different values - using existing values to prevent double-counting`);
+              console.warn(`[Reports]   Existing: OTG=$${(existingItem.otgComp || 0).toFixed(2)}, Seller=$${(existingItem.sellerComp || 0).toFixed(2)}`);
+              console.warn(`[Reports]   New: OTG=$${(newItem.otgComp || 0).toFixed(2)}, Seller=$${(newItem.sellerComp || 0).toFixed(2)}`);
+            }
+            // Don't add duplicate item - keep existing one
+          } else {
+            // New item - add it
+            mergedItems.push(newItem);
+            existingItemsMap.set(key, newItem);
+          }
+        });
+        
+        // Recalculate totals from merged items (not by adding totals, which would double-count)
+        const totalOtgComp = mergedItems.reduce((sum, item) => sum + (item.otgComp || 0), 0);
+        const totalSellerComp = mergedItems.reduce((sum, item) => sum + (item.sellerComp || 0), 0);
+        
         deduplicated.set(stmt.roleGroup, {
           roleGroup: stmt.roleGroup,
           items: mergedItems,
-          totalOtgComp: existing.totalOtgComp + stmt.totalOtgComp,
-          totalSellerComp: existing.totalSellerComp + stmt.totalSellerComp,
+          totalOtgComp,
+          totalSellerComp,
         });
       } else {
         deduplicated.set(stmt.roleGroup, stmt);
@@ -792,7 +827,8 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     try {
       setIsRegenerating(true);
       
-      if (masterData.length === 0) {
+      const hasMasterData = masterData && Array.isArray(masterData) && masterData.length > 0;
+      if (!hasMasterData) {
         alert('Comp Key is empty. Please load Comp Key before regenerating seller statements.');
         return;
       }
@@ -937,8 +973,10 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
             // Fallback to regeneration if direct update fails
             const monthsToRegenerate = [...new Set(pendingDeletedMatchesRef.current.map(p => p.processingMonth))];
             for (const month of monthsToRegenerate) {
-              if (masterData.length > 0) {
+              if (masterData && Array.isArray(masterData) && masterData.length > 0) {
                 await regenerateSellerStatements(month, masterData);
+              } else {
+                await regenerateSellerStatements(month);
               }
             }
             pendingDeletedMatchesRef.current = [];

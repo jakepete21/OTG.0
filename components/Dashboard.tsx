@@ -61,7 +61,9 @@ const Dashboard: React.FC<DashboardProps> = ({
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       // Call function to regenerate seller statements
-      const result = await regenerateSellerStatements(processingMonth);
+      // Pass masterData only if it exists and has data, otherwise let function fetch from Firebase
+      const masterDataToPass = (masterData && Array.isArray(masterData) && masterData.length > 0) ? masterData : undefined;
+      const result = await regenerateSellerStatements(processingMonth, masterDataToPass);
       
       console.log(`[regenerateSellerStatementsForMonth] Regeneration complete`);
       console.log(`[regenerateSellerStatementsForMonth] Total matches processed: ${result.matchedRowsCount}`);

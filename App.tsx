@@ -57,7 +57,7 @@ const App: React.FC = () => {
       case 'disputes':
         return <Disputes analysisResult={analysisResult} carrierStatementResult={carrierStatementResult} />;
       case 'commissions':
-        return <Reports analysisResult={analysisResult} carrierStatementResult={carrierStatementResult} />;
+        return <Reports analysisResult={analysisResult} carrierStatementResult={carrierStatementResult} masterData={masterData2} />;
       case 'statement-compare':
         return <StatementCompare />;
       case 'sync-test':

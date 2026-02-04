@@ -49,9 +49,140 @@ Acceptance:
 - Update Commissions Tab to Show Expandable Months Jan-Jun 2026 with Carrier Status (2026-01-30) - Restructured Commissions tab to show 6 months as expandable accordion sections, each showing carrier status and seller statements when expanded
 
 ### 🔄 In Progress
-- Fix Statement Compare to Use AI for Column Detection
 
 ### 📋 Backlog
+
+#### ✅ Ticket: Investigate and Fix Doubled Firebase Values in Statement Compare (RD1/2) (COMPLETED 2026-02-04)
+**Goal**: Investigate why Firebase seller statement values are exactly double the CSV values in Statement Compare, specifically for RD1/2, and fix the root cause
+
+**Problem**: 
+- Statement Compare shows Firebase values that are exactly double the CSV values for RD1/2
+- All differences are due to Firebase values being doubled
+- This suggests duplicate data storage or double-counting in seller statements
+- User suspects seller statements are stored twice or matches are duplicated
+
+**Root Cause** (to be investigated):
+- Possible causes:
+  1. Duplicate seller statements stored in Firebase (same roleGroup + processingMonth stored twice)
+  2. Duplicate matches being stored (same match stored multiple times)
+  3. Seller statement generation logic double-counting items
+  4. Deduplication logic in Reports.tsx (lines 302-323) merging duplicates incorrectly
+  5. Regeneration not properly deleting old seller statements before creating new ones
+
+**Expected Behavior**:
+- Firebase seller statement values should match CSV values (within tolerance)
+- No duplicate seller statements in Firebase for same roleGroup + processingMonth
+- No duplicate matches in Firebase
+- Statement Compare should show accurate comparisons
+
+**DB**: Investigate Firestore data for duplicates
+
+**UI**: Statement Compare should show accurate values
+
+**Files to Investigate**:
+- `services/firebaseMutations.ts`:
+  - `regenerateSellerStatements` (lines 579-824) - Check if seller statements are properly deleted before creating new ones
+  - `storeMatches` (lines 262-320) - Check if matches could be duplicated
+  - Seller statement storage logic (lines 803-821) - Check if duplicates could be created
+  
+- `components/Reports.tsx`:
+  - Deduplication logic (lines 302-323) - Check if merging duplicates correctly
+  - How seller statements are read from Firebase (lines 259-323)
+  
+- `services/firebaseQueries.ts`:
+  - `getSellerStatements` (lines 81-96) - Check if query could return duplicates
+  
+- `services/sellerStatements.ts`:
+  - `generateSellerStatements` (lines 134-207) - Check if generation logic could double-count
+  - `summarizeGroup` (lines 24-129) - Check if aggregation logic could double-count
+
+**Investigation Steps**:
+
+1. **Check Firebase Data**:
+   - Query seller statements for RD1/2 for the processing month
+   - Check if there are multiple documents with same roleGroup + processingMonth
+   - Check if items within a single document are duplicated
+   - Query matches to see if there are duplicate matches
+
+2. **Check Storage Logic**:
+   - Review `regenerateSellerStatements` to see if deletion happens before creation
+   - Check if seller statements are created with unique IDs or could overwrite
+   - Verify deletion logic completes before new statements are created
+
+3. **Check Generation Logic**:
+   - Review `generateSellerStatements` to see if matched rows are processed multiple times
+   - Check `summarizeGroup` to see if items are aggregated correctly
+   - Verify no double-counting in aggregation
+
+4. **Check Deduplication Logic**:
+   - Review Reports.tsx deduplication (lines 302-323)
+   - If duplicates exist, merging by adding items would double values
+   - Should deduplicate by checking if items already exist, not just merging
+
+5. **Add Diagnostic Logging**:
+   - Log how many seller statement documents exist for RD1/2
+   - Log how many matches exist for the processing month
+   - Log totals before and after deduplication
+   - Log item counts and values for specific billing items
+
+**Fix Strategy** (after investigation):
+
+1. **If duplicates in Firebase**:
+   - Fix storage logic to prevent duplicates (use unique constraint or check before creating)
+   - Clean up existing duplicates in Firebase
+   - Ensure deletion completes before creation
+
+2. **If duplicate matches**:
+   - Fix `storeMatches` to prevent duplicate matches
+   - Clean up duplicate matches in Firebase
+   - Add unique constraint on match key (processingMonth + carrierStatementId + billingItem + accountName)
+
+3. **If double-counting in generation**:
+   - Fix aggregation logic in `summarizeGroup`
+   - Ensure matched rows are only processed once
+
+4. **If deduplication issue**:
+   - Fix Reports.tsx deduplication to properly handle duplicates
+   - Instead of merging by adding items, check if items already exist
+   - Or prevent duplicates at storage level
+
+**Acceptance Criteria**:
+- [x] Root cause identified (duplicate storage, double-counting, or deduplication issue)
+- [x] Fix implemented to prevent the issue
+- [x] Existing duplicate data cleaned up (if applicable)
+- [x] Statement Compare shows accurate values (Firebase matches CSV)
+- [x] No duplicate seller statements in Firebase for same roleGroup + processingMonth
+- [x] Diagnostic logging added to help identify future issues
+
+**Completed Changes**:
+
+1. **Root Cause Identified**:
+   - Multiple seller statement documents with same `roleGroup` + `processingMonth` existed in Firebase
+   - Reports.tsx deduplication logic merged duplicates by concatenating items and adding totals, causing double-counting
+   - `addItemsToSellerStatements` and `regenerateSellerStatements` used random document IDs, allowing duplicates
+
+2. **Fixes Implemented**:
+   - **Reports.tsx**: Fixed deduplication logic to merge items by key (`billingItem|accountName`) instead of concatenating, preventing double-counting
+   - **firebaseMutations.ts**: Updated `addItemsToSellerStatements` to use deterministic document IDs (`${processingMonth}_${roleGroup}`) to prevent duplicate documents
+   - **firebaseMutations.ts**: Updated `regenerateSellerStatements` to use deterministic document IDs
+   - Added duplicate detection and logging in `addItemsToSellerStatements` to catch duplicates early
+
+3. **Cleanup Tools Created**:
+   - `scripts/diagnoseDoubledValues.ts`: Diagnostic script to check Firebase for duplicate seller statements, duplicate matches, and double-counting issues
+   - `scripts/cleanupDuplicateSellerStatements.ts`: Cleanup script to merge duplicate documents and migrate to deterministic IDs
+
+4. **Prevention**:
+   - Deterministic document IDs ensure only one document per `roleGroup` + `processingMonth` combination
+   - Improved deduplication logic prevents double-counting when duplicates exist
+   - Diagnostic logging helps identify issues early
+
+**Files Updated**:
+- `components/Reports.tsx` - Fixed deduplication logic to merge items by key
+- `services/firebaseMutations.ts` - Added deterministic IDs and duplicate detection
+- `scripts/diagnoseDoubledValues.ts` - New diagnostic script
+- `scripts/cleanupDuplicateSellerStatements.ts` - New cleanup script
+
+---
 
 #### 🔧 Ticket: Fix Zayo Carrier Statement Showing for Wrong Month and Remove Unnecessary Logs
 **Goal**: Fix bug where Zayo carrier statement shows for January when it should only show for February, and remove all unnecessary console logs from Commissions tab

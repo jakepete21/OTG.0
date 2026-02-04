@@ -268,17 +268,40 @@ export async function storeMatches(
   const matchesRef = collection(db, 'matches');
   const createdAt = Timestamp.now();
   
+  // Deduplicate matches before storing
+  // Create a map of matches by key (billingItem|accountName) to prevent duplicates
+  const matchKeys = new Map<string, MatchedRow>();
+  let duplicateCount = 0;
+  
+  matchedRowsBatch.forEach((matchedRow) => {
+    const key = `${matchedRow.otgCompBillingItem}|${matchedRow.accountName}`;
+    if (matchKeys.has(key)) {
+      duplicateCount++;
+      console.warn(`[storeMatches] Duplicate match detected: ${key} (BillingItem=${matchedRow.otgCompBillingItem}, Account=${matchedRow.accountName})`);
+    } else {
+      matchKeys.set(key, matchedRow);
+    }
+  });
+  
+  if (duplicateCount > 0) {
+    console.warn(`[storeMatches] Found ${duplicateCount} duplicate matches in batch, deduplicating before storing`);
+  }
+  
+  // Use deduplicated matches
+  const deduplicatedMatches = Array.from(matchKeys.values());
+  console.log(`[storeMatches] Storing ${deduplicatedMatches.length} unique matches (${matchedRowsBatch.length} total, ${duplicateCount} duplicates removed)`);
+  
   // Firestore batch limit: 500 operations per batch
   // Use 450 to leave some headroom for safety
   const BATCH_SIZE = 450;
   const CONCURRENT_BATCHES = 5; // Process up to 5 batches in parallel
-  const totalBatches = Math.ceil(matchedRowsBatch.length / BATCH_SIZE);
+  const totalBatches = Math.ceil(deduplicatedMatches.length / BATCH_SIZE);
 
   // Prepare all batches upfront
   const batchPromises: Array<{ batch: ReturnType<typeof writeBatch>, chunk: MatchedRow[], batchNumber: number }> = [];
   
-  for (let i = 0; i < matchedRowsBatch.length; i += BATCH_SIZE) {
-    const chunk = matchedRowsBatch.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < deduplicatedMatches.length; i += BATCH_SIZE) {
+    const chunk = deduplicatedMatches.slice(i, i + BATCH_SIZE);
     const batch = writeBatch(db);
     const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
 
@@ -310,7 +333,7 @@ export async function storeMatches(
       }
       
       // Log progress for large batches
-      if (matchedRowsBatch.length > BATCH_SIZE) {
+      if (deduplicatedMatches.length > BATCH_SIZE) {
         console.log(`[storeMatches] Stored batch ${batchData.batchNumber}/${totalBatches} (${batchData.chunk.length} matches)`);
       }
     } catch (error) {
@@ -325,7 +348,7 @@ export async function storeMatches(
     await Promise.all(batchChunk.map(processBatch));
   }
 
-  return { success: true, count: matchedRowsBatch.length };
+  return { success: true, count: deduplicatedMatches.length };
 }
 
 /**
@@ -454,14 +477,66 @@ export async function addItemsToSellerStatements(
   const sellerSnapshot = await getDocs(sellerQuery);
 
   // Create a map of existing seller statements by role group
+  // Also check for documents with deterministic IDs (new format) and random IDs (old format)
   const existingStatementsMap = new Map<string, { docId: string; data: any }>();
+  const duplicateDocuments: Array<{ roleGroup: string; docIds: string[] }> = [];
+  
   sellerSnapshot.docs.forEach((doc) => {
     const data = doc.data();
     const roleGroup = data.roleGroup;
     if (roleGroup) {
-      existingStatementsMap.set(roleGroup, { docId: doc.id, data });
+      // Check if this document uses deterministic ID format
+      const expectedDeterministicId = `${processingMonth}_${roleGroup.replace(/\//g, '_')}`;
+      if (doc.id === expectedDeterministicId) {
+        // Document uses deterministic ID - this is the correct format
+        if (existingStatementsMap.has(roleGroup)) {
+          // Duplicate detected!
+          const existing = existingStatementsMap.get(roleGroup)!;
+          duplicateDocuments.push({
+            roleGroup,
+            docIds: [existing.docId, doc.id],
+          });
+          console.error(`[addItemsToSellerStatements] ⚠️ DUPLICATE DETECTED: Multiple documents exist for ${roleGroup} in ${processingMonth}`);
+          console.error(`[addItemsToSellerStatements]   Document 1: ${existing.docId}`);
+          console.error(`[addItemsToSellerStatements]   Document 2: ${doc.id} (deterministic ID)`);
+          // Keep the deterministic ID version
+          existingStatementsMap.set(roleGroup, { docId: doc.id, data });
+        } else {
+          existingStatementsMap.set(roleGroup, { docId: doc.id, data });
+        }
+      } else {
+        // Document uses random ID (old format) - still include it but log warning
+        if (!existingStatementsMap.has(roleGroup)) {
+          existingStatementsMap.set(roleGroup, { docId: doc.id, data });
+          console.warn(`[addItemsToSellerStatements] Found seller statement with random ID (old format): ${doc.id} for ${roleGroup}. Consider migrating to deterministic ID: ${expectedDeterministicId}`);
+        } else {
+          // Multiple documents for same roleGroup - this is a duplicate!
+          const existing = existingStatementsMap.get(roleGroup)!;
+          duplicateDocuments.push({
+            roleGroup,
+            docIds: [existing.docId, doc.id],
+          });
+          console.error(`[addItemsToSellerStatements] ⚠️ DUPLICATE DETECTED: Multiple documents exist for ${roleGroup} in ${processingMonth}`);
+          console.error(`[addItemsToSellerStatements]   Existing: ${existing.docId}`);
+          console.error(`[addItemsToSellerStatements]   Duplicate: ${doc.id}`);
+          // Keep the one with deterministic ID if available, otherwise keep existing
+          const expectedDeterministicId = `${processingMonth}_${roleGroup.replace(/\//g, '_')}`;
+          if (doc.id === expectedDeterministicId) {
+            existingStatementsMap.set(roleGroup, { docId: doc.id, data });
+          }
+        }
+      }
     }
   });
+
+  // Log summary of duplicates found
+  if (duplicateDocuments.length > 0) {
+    console.error(`[addItemsToSellerStatements] ⚠️ WARNING: Found ${duplicateDocuments.length} duplicate role group(s):`);
+    duplicateDocuments.forEach((dup) => {
+      console.error(`[addItemsToSellerStatements]   - ${dup.roleGroup}: ${dup.docIds.join(', ')}`);
+    });
+    console.error(`[addItemsToSellerStatements] Run cleanupDuplicateSellerStatements.ts script to fix duplicates`);
+  }
 
   const batch = writeBatch(db);
   let updatedGroups = 0;
@@ -474,7 +549,10 @@ export async function addItemsToSellerStatements(
 
     if (!existing) {
       // No existing statement for this role group - create new document
-      const newDocRef = doc(sellerStatementsRef);
+      // Use deterministic ID based on processingMonth + roleGroup to prevent duplicates
+      // Replace "/" in roleGroup with "_" for valid document ID
+      const deterministicId = `${processingMonth}_${newStmt.roleGroup.replace(/\//g, '_')}`;
+      const newDocRef = doc(sellerStatementsRef, deterministicId);
       const cleanedStmt = removeUndefinedValues({
         processingMonth,
         roleGroup: newStmt.roleGroup,
@@ -483,10 +561,11 @@ export async function addItemsToSellerStatements(
         totalSellerComp: newStmt.totalSellerComp,
         processedAt,
       });
+      // Use setDoc with merge: false to ensure we don't accidentally merge with existing data
       batch.set(newDocRef, cleanedStmt);
       addedItemsCount += newStmt.items.length;
       updatedGroups++;
-      console.log(`[addItemsToSellerStatements] Created new seller statement group: ${newStmt.roleGroup} with ${newStmt.items.length} items`);
+      console.log(`[addItemsToSellerStatements] Created new seller statement group: ${newStmt.roleGroup} with ${newStmt.items.length} items (ID: ${deterministicId})`);
     } else {
       // Merge with existing statement
       const existingItems: any[] = existing.data.items || [];
@@ -578,10 +657,46 @@ export async function addItemsToSellerStatements(
  */
 export async function regenerateSellerStatements(
   processingMonth: string,
-  masterData: MasterRecord[]
+  masterData?: MasterRecord[]
 ): Promise<{ success: boolean; matchedRowsCount: number; sellerStatementGroups: number }> {
   console.log(`[regenerateSellerStatements] Starting full regeneration for ${processingMonth}`);
-  console.log(`[regenerateSellerStatements] Master data records: ${masterData.length}`);
+  console.log(`[regenerateSellerStatements] masterData parameter:`, masterData ? `provided (${Array.isArray(masterData) ? masterData.length : 'not array'} items)` : 'not provided');
+  
+  // If masterData not provided, fetch it from Firebase
+  let masterDataToUse: MasterRecord[];
+  
+  if (masterData && Array.isArray(masterData) && masterData.length > 0) {
+    // Use provided masterData
+    masterDataToUse = masterData;
+    console.log(`[regenerateSellerStatements] Using provided master data: ${masterDataToUse.length} records`);
+  } else {
+    // Fetch from Firebase
+    console.log(`[regenerateSellerStatements] Master data not provided or empty, fetching from Firebase...`);
+    try {
+      const { getMasterData2 } = await import('./firebaseQueries');
+      const fetchedData = await getMasterData2();
+      console.log(`[regenerateSellerStatements] getMasterData2 returned:`, fetchedData ? (Array.isArray(fetchedData) ? `${fetchedData.length} items` : 'not an array') : 'null/undefined');
+      
+      if (!fetchedData || !Array.isArray(fetchedData)) {
+        throw new Error(`Failed to fetch master data from Firebase: Invalid response (${fetchedData === null ? 'null' : fetchedData === undefined ? 'undefined' : typeof fetchedData})`);
+      }
+      masterDataToUse = fetchedData;
+      console.log(`[regenerateSellerStatements] Fetched ${masterDataToUse.length} master data records from Firebase`);
+    } catch (error: any) {
+      console.error(`[regenerateSellerStatements] Error fetching master data from Firebase:`, error);
+      throw new Error(`Failed to fetch master data from Firebase: ${error.message}. Please ensure Comp Key is loaded.`);
+    }
+  }
+  
+  // Final validation
+  if (!masterDataToUse || !Array.isArray(masterDataToUse) || masterDataToUse.length === 0) {
+    console.error(`[regenerateSellerStatements] Validation failed:`, {
+      masterDataToUse: masterDataToUse ? (Array.isArray(masterDataToUse) ? `${masterDataToUse.length} items` : `not an array (${typeof masterDataToUse})`) : 'null/undefined'
+    });
+    throw new Error('Master data is required for regeneration. Please ensure Comp Key is loaded in Firebase.');
+  }
+  
+  console.log(`[regenerateSellerStatements] Using ${masterDataToUse.length} master data records`);
 
   // Step 1: Delete all existing matches for this processing month
   const matchesRef = collection(db, 'matches');
@@ -712,8 +827,8 @@ export async function regenerateSellerStatements(
       const file = new File([blob], carrierStatement.filename, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       
       // Re-extract and re-match
-      console.log(`[regenerateSellerStatements] Processing file ${carrierStatement.filename} with master data (${masterData.length} records)`);
-      const result = await processCarrierStatement(file, masterData);
+      console.log(`[regenerateSellerStatements] Processing file ${carrierStatement.filename} with master data (${masterDataToUse.length} records)`);
+      const result = await processCarrierStatement(file, masterDataToUse);
       
       console.log(`[regenerateSellerStatements] Re-matched ${result.matchedRows.length} rows for ${carrierStatement.carrier}`);
       
@@ -801,7 +916,10 @@ export async function regenerateSellerStatements(
   const storeBatch = writeBatch(db);
   
   sellerStatements.forEach((stmt) => {
-    const sellerDocRef = doc(sellerStatementsRef);
+    // Use deterministic ID based on processingMonth + roleGroup to prevent duplicates
+    // Replace "/" in roleGroup with "_" for valid document ID
+    const deterministicId = `${processingMonth}_${stmt.roleGroup.replace(/\//g, '_')}`;
+    const sellerDocRef = doc(sellerStatementsRef, deterministicId);
     // Remove undefined values before storing (Firestore doesn't allow undefined)
     const cleanedStmt = removeUndefinedValues(stmt);
     storeBatch.set(sellerDocRef, {

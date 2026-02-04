@@ -5,40 +5,7 @@
 
 import * as XLSX from 'xlsx';
 import { CarrierStatementRow } from '../../types';
-
-/**
- * Parses currency string or number to number
- */
-const parseCurrency = (val: any): number => {
-  // If already a number, return it (handles negative numbers)
-  if (typeof val === 'number') {
-    return isNaN(val) ? 0 : val;
-  }
-  
-  // If null/undefined/empty, return 0
-  if (val == null || val === '') {
-    return 0;
-  }
-  
-  // Convert to string and parse
-  const str = String(val).trim();
-  if (!str) return 0;
-  
-  // Handle negative values: (123.45) or -123.45
-  const isNegative = str.startsWith('-') || str.startsWith('(');
-  
-  // Remove currency symbols, commas, parentheses
-  const cleaned = str.replace(/[\$,()]/g, '').trim();
-  
-  // Parse as float
-  const num = parseFloat(cleaned);
-  
-  if (isNaN(num)) {
-    return 0;
-  }
-  
-  return isNegative ? -Math.abs(num) : num;
-};
+import { parseCurrency } from '../numberFormat';
 
 /**
  * Normalizes header name for matching

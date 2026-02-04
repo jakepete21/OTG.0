@@ -73,6 +73,7 @@ const ProcessingMonths: React.FC<ProcessingMonthsProps> = ({
         console.log(`[handleDeleteStatement] Statement deleted successfully`);
         
         // Regenerate seller statements from remaining matches
+        // Note: regenerateSellerStatements will fetch masterData from Firebase if not provided
         // Add a small delay to ensure deletion is committed
         await new Promise(resolve => setTimeout(resolve, 500));
         await regenerateSellerStatements(processingMonth);

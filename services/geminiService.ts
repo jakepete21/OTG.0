@@ -23,6 +23,36 @@ const mappingSchema: Schema = {
   required: ["clientName", "serviceType", "salesperson", "expectedAmount", "splitPercentage"]
 };
 
+// Schema for Seller Statement Column Detection
+const sellerStatementColumnSchema: Schema = {
+  type: Type.OBJECT,
+  description: "Column mapping for seller statement sheets (RD1/2, RD3/4, etc.)",
+  properties: {
+    accountName: {
+      type: Type.STRING,
+      description: "Column name or index (0-based) for Account Name/Client Name/Customer Name"
+    },
+    otgCompBillingItem: {
+      type: Type.STRING,
+      description: "Column name or index (0-based) for OTG Comp Billing Item/Service Number/Billing Item"
+    },
+    otgComp: {
+      type: Type.STRING,
+      description: "Column name or index (0-based) for OTG Comp/Commission Amount/OTG Commission"
+    },
+    sellerComp: {
+      type: Type.STRING,
+      description: "Column name or index (0-based) for Seller Comp/Seller Commission/Role Comp"
+    },
+    state: {
+      type: Type.STRING,
+      nullable: true,
+      description: "Column name or index (0-based) for State/ST/State Code (optional)"
+    }
+  },
+  required: ["accountName", "otgCompBillingItem", "otgComp", "sellerComp"]
+};
+
 // Schema for Commission Analysis
 const analysisSchema: Schema = {
   type: Type.OBJECT,
@@ -62,6 +92,116 @@ const analysisSchema: Schema = {
     }
   },
   required: ["processedItems", "missingFromStatementIds", "summary"]
+};
+
+/**
+ * Detects seller statement columns using AI analysis
+ * Analyzes sheet headers and sample rows to identify which columns map to required fields
+ * 
+ * @param headers - Array of column header names from the sheet
+ * @param sampleRows - Array of sample data rows (first 5-10 rows recommended)
+ * @returns Column mapping object with column names/indices
+ */
+export const detectSellerStatementColumns = async (
+  headers: string[],
+  sampleRows: any[][]
+): Promise<{
+  accountName: string;
+  otgCompBillingItem: string;
+  otgComp: string;
+  sellerComp: string;
+  state?: string | null;
+}> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API Key is missing.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  const systemInstruction = `
+You are a Column Detection Assistant for seller statement sheets.
+Your task is to analyze the headers and sample rows from a seller statement sheet (like RD1/2, RD3/4, RM1/2, etc.)
+and identify which columns correspond to the required fields.
+
+CRITICAL: Look at the actual DATA VALUES in the sample rows to understand what each column contains, not just the header names.
+
+Required fields to detect:
+1. **accountName**: Account Name, Client Name, Customer Name, Account, Customer, Client, Company Name
+   - Look for columns containing company/account names (text values)
+   
+2. **otgCompBillingItem**: OTG Comp Billing Item, Billing Item, Service Number, Billing Item Number, Service ID, Item Number, Billing Item #
+   - Look for columns containing service/billing item identifiers (alphanumeric codes)
+   
+3. **otgComp**: OTG Comp, Commission Amount, OTG Commission, Total Commission, Commission, OTG Comp $, Commission Amount $
+   - Look for columns containing commission amounts (numeric values, usually currency)
+   - This is the TOTAL commission amount
+   
+4. **sellerComp**: Seller Comp, Seller Commission, Role Comp, Comp, Seller Amount, Seller Comp $, Role Commission
+   - Look for columns containing seller/role commission amounts (numeric values, usually currency)
+   - This is the portion of commission that goes to the seller/role
+   - May be labeled as "RD1", "RD2", "RM1", etc. or "Seller Comp" or "Role Comp"
+   
+5. **state** (optional): State, ST, State Code, State Abbreviation
+   - Look for 2-letter state codes or full state names
+
+IMPORTANT:
+- Return the EXACT column name as it appears in the headers array (case-sensitive match)
+- If exact match fails, return the column index as a string (e.g., "0", "1", "2")
+- Analyze the sample data values to confirm column meanings
+- For sellerComp, look for columns that contain commission splits or role-specific amounts
+- If sellerComp column is not clearly labeled, look for columns that contain smaller amounts than otgComp (seller comp is usually a portion of otg comp)
+`;
+
+  // Prepare sample data (limit to first 10 rows to avoid token limits)
+  const limitedSampleRows = sampleRows.slice(0, 10);
+  const headersList = headers.map((h, idx) => `[${idx}] ${h || '(empty)'}`).join(", ");
+  const sampleDataJson = JSON.stringify(limitedSampleRows, null, 2);
+
+  const prompt = `
+Analyze this seller statement sheet to detect column mappings.
+
+Sheet Headers (${headers.length} columns):
+${headersList}
+
+Sample Data Rows (first ${limitedSampleRows.length} rows):
+${sampleDataJson}
+
+Please identify which columns map to:
+- accountName: Account Name/Client Name/Customer Name
+- otgCompBillingItem: OTG Comp Billing Item/Service Number/Billing Item
+- otgComp: OTG Comp/Commission Amount/OTG Commission
+- sellerComp: Seller Comp/Seller Commission/Role Comp
+- state (optional): State/ST/State Code
+
+Return column names (exact match from headers) or indices (0-based numbers as strings).
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: {
+        parts: [{ text: prompt }]
+      },
+      config: {
+        systemInstruction: systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: sellerStatementColumnSchema,
+        temperature: 0.1 // Low temperature for consistent detection
+      }
+    });
+
+    const resultText = response.text;
+    if (!resultText) {
+      throw new Error("No response from AI");
+    }
+
+    const parsed = JSON.parse(cleanJsonString(resultText));
+    return parsed;
+
+  } catch (error: any) {
+    console.error("Seller Statement Column Detection Error:", error);
+    throw new Error(`Failed to detect columns: ${error.message}`);
+  }
 };
 
 /**
