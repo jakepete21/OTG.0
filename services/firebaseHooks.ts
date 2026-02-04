@@ -19,11 +19,13 @@ import {
   uploadCarrierStatement,
   storeMatches,
   regenerateSellerStatements,
+  addItemsToSellerStatements,
   deleteCarrierStatement,
   removeItemsFromSellerStatements,
   saveMasterData2,
   updateMasterData2Record,
   deleteMasterData2Record,
+  fixCarrierStatementProcessingMonth,
 } from './firebaseMutations';
 import type {
   CarrierStatementDoc,
@@ -311,6 +313,13 @@ export const useRegenerateSellerStatements = () => {
 };
 
 /**
+ * Hook to add items to seller statements incrementally (more efficient than regenerating)
+ */
+export const useAddItemsToSellerStatements = () => {
+  return addItemsToSellerStatements;
+};
+
+/**
  * Hook to delete a carrier statement
  */
 export const useDeleteCarrierStatement = () => {
@@ -322,6 +331,13 @@ export const useDeleteCarrierStatement = () => {
  */
 export const useRemoveItemsFromSellerStatements = () => {
   return removeItemsFromSellerStatements;
+};
+
+/**
+ * Hook to fix processing month on a carrier statement
+ */
+export const useFixCarrierStatementProcessingMonth = () => {
+  return fixCarrierStatementProcessingMonth;
 };
 
 /**

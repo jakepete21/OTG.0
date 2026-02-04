@@ -49,9 +49,167 @@ Acceptance:
 - Update Commissions Tab to Show Expandable Months Jan-Jun 2026 with Carrier Status (2026-01-30) - Restructured Commissions tab to show 6 months as expandable accordion sections, each showing carrier status and seller statements when expanded
 
 ### 🔄 In Progress
-- Add New Accounts and Line Items to Master Data 2
+- Fix Statement Compare to Use AI for Column Detection
 
 ### 📋 Backlog
+
+#### 🔧 Ticket: Fix Zayo Carrier Statement Showing for Wrong Month and Remove Unnecessary Logs
+**Goal**: Fix bug where Zayo carrier statement shows for January when it should only show for February, and remove all unnecessary console logs from Commissions tab
+
+**Problem**: 
+- Commissions tab shows Zayo carrier statement for January 2026
+- Actual Zayo statement is only for February 2026 (correct)
+- January should not show Zayo in carrier status
+- Too many console.log statements cluttering the console
+
+**Root Cause**:
+- In `components/Reports.tsx`, lines 262-278 have logic that adds Zayo to merged carriers if seller statements have Zayo data
+- The code finds ANY Zayo statement regardless of processingMonth: `allCarrierStatements.find(s => s.carrier === 'Zayo')`
+- This causes February's Zayo statement to appear in January's carriers if January seller statements happen to have Zayo data (from previous incorrect regeneration or matches)
+- Multiple console.log statements throughout Reports.tsx for debugging (lines 90-137, 370, 376, 378, 387, 390, 394, 419, 1159, 1161, 1163, 1165)
+- Console logs also in `services/firebaseHooks.ts` (lines 56-78)
+
+**Expected Behavior**:
+- Zayo should only show for the month where its carrier statement's `processingMonth` matches that month
+- January should not show Zayo if the Zayo statement's `processingMonth` is "2026-02"
+- February should show Zayo if the Zayo statement's `processingMonth` is "2026-02"
+- No unnecessary console.log statements in production code
+
+**DB**: None (UI bug fix only)
+
+**UI**: Fix carrier status display logic, remove console logs
+
+**Files to Update**:
+- `components/Reports.tsx`:
+  - Fix `mergedCarriers` useMemo (lines 242-281) - Only include Zayo if its `processingMonth` matches `monthData.monthKey`
+  - Remove all console.log statements (lines 90-137, 370, 376, 378, 387, 390, 394, 419, 1159, 1161, 1163, 1165)
+  - Keep only essential error logging (console.error for actual errors)
+  
+- `services/firebaseHooks.ts`:
+  - Remove diagnostic logging for Zayo statements (lines 55-78)
+  - Keep only essential error logging
+
+**Implementation Details**:
+
+1. **Fix Zayo Carrier Logic** (`components/Reports.tsx`, lines 262-278):
+   - Current: Finds ANY Zayo statement regardless of processingMonth
+   - Fix: Only include Zayo if `zayoStatement.processingMonth === monthData.monthKey`
+   - If seller statements have Zayo data but no matching Zayo statement, don't add it (let the fix button handle mismatches)
+
+2. **Remove Console Logs**:
+   - Remove diagnostic logging in `useEffect` (lines 90-137)
+   - Remove duplicate detection logs (lines 370, 376, 378, 387, 390, 394, 419)
+   - Remove Zayo fix button logs (lines 1159, 1161, 1163, 1165)
+   - Remove Zayo diagnostic logging in `firebaseHooks.ts` (lines 55-78)
+   - Keep `console.error` for actual errors (network failures, etc.)
+
+3. **Preserve Error Handling**:
+   - Keep `console.error` and `console.warn` for actual errors
+   - Remove informational/debugging `console.log` statements
+
+**Acceptance Criteria**:
+- [ ] Zayo only shows for February 2026 (where the actual Zayo statement exists)
+- [ ] Zayo does NOT show for January 2026
+- [ ] All unnecessary console.log statements removed from Reports.tsx
+- [ ] All unnecessary console.log statements removed from firebaseHooks.ts
+- [ ] Essential error logging (console.error) preserved
+- [ ] Carrier status display is accurate for all months
+
+---
+
+#### 🔧 Ticket: Fix Statement Compare to Use AI for Column Detection
+**Goal**: Fix Statement Compare to properly parse uploaded XLSX files by using AI (Gemini) to detect which columns match required fields, instead of using hardcoded column name mappings
+
+**Problem**: 
+- Statement Compare is not working correctly
+- Current implementation uses hardcoded column name mappings (e.g., 'account name', 'otg comp', 'seller comp')
+- Uploaded XLSX files may have different column names that don't match the hardcoded mappings
+- Need to use AI to intelligently detect which columns in each tab (RD1/2, RD3/4, etc.) correspond to required fields
+- Similar to how CSV analysis service uses Gemini for column mapping
+
+**Root Cause**:
+- `parseCsvToSellerStatements` function in `services/statementComparisonService.ts` (lines 80-94) uses hardcoded column name lookups
+- Code tries to find columns by exact string matches: `['account name', 'account', 'customer name', 'client name']`
+- If uploaded XLSX has different column names (e.g., "Account", "Client", "OTG Commission", "Seller Commission"), it won't find them
+- No AI-powered column detection like the CSV analysis service uses
+
+**Expected Behavior**:
+- Upload XLSX file with tabs like "RD1/2", "RD3/4", "RM1/2", "RM3/4", "OVR/RD5", "OTG"
+- For each tab, use Gemini AI to analyze the headers and detect which columns map to:
+  - Account Name (or Client Name, Customer Name, etc.)
+  - OTG Comp Billing Item (or Service Number, Billing Item, etc.)
+  - OTG Comp (or Commission Amount, OTG Commission, etc.)
+  - Seller Comp (or Seller Commission, Role Comp, etc.)
+  - State (optional)
+- Parse each tab using the AI-detected column mappings
+- Compare parsed data with Firebase seller statements accurately
+
+**DB**: None (parsing logic fix only)
+
+**UI**: Statement Compare tab should work correctly with any XLSX file format
+
+**Files to Update**:
+- `services/statementComparisonService.ts`:
+  - Update `parseCsvToSellerStatements` function (lines 51-149)
+  - Add AI-powered column detection using Gemini (similar to `getColumnMapping` in `geminiService.ts`)
+  - For each tab (RD1/2, RD3/4, etc.), analyze headers and detect column mappings
+  - Use detected mappings to parse rows instead of hardcoded column names
+  - Handle cases where AI can't detect certain columns (fallback to manual detection or error)
+
+- `services/geminiService.ts` (optional):
+  - Add new function `detectSellerStatementColumns` if needed
+  - Or extend existing `getColumnMapping` to handle seller statement columns
+
+**Implementation Details**:
+
+1. **AI Column Detection Function**:
+   - Create function `detectSellerStatementColumns(sheetHeaders: string[], sampleRows: any[][]): Promise<ColumnMapping>`
+   - Use Gemini AI with structured schema to detect:
+     - `accountName`: Column for Account Name/Client Name/Customer Name
+     - `otgCompBillingItem`: Column for OTG Comp Billing Item/Service Number/Billing Item
+     - `otgComp`: Column for OTG Comp/Commission Amount/OTG Commission
+     - `sellerComp`: Column for Seller Comp/Seller Commission/Role Comp
+     - `state`: Column for State/ST/State Code (optional)
+   - Return column indices or column names that match
+
+2. **Update `parseCsvToSellerStatements`**:
+   - For each tab (RD1/2, RD3/4, etc.):
+     - Extract headers from first row
+     - Extract sample rows (first 5-10 rows) for context
+     - Call AI detection function to get column mappings
+     - Use detected mappings to parse all rows
+     - Handle parsing errors gracefully
+
+3. **Error Handling**:
+   - If AI fails to detect required columns, show clear error message
+   - Allow fallback to manual column detection if needed
+   - Log which columns were detected for debugging
+
+4. **Performance**:
+   - Cache column mappings per tab if same file is re-uploaded
+   - Process tabs in parallel if possible
+   - Show loading state while AI is analyzing columns
+
+**Column Mapping Schema** (for Gemini):
+```typescript
+{
+  accountName: string;        // Column name/index for Account Name
+  otgCompBillingItem: string; // Column name/index for OTG Comp Billing Item
+  otgComp: string;            // Column name/index for OTG Comp
+  sellerComp: string;         // Column name/index for Seller Comp
+  state?: string;            // Column name/index for State (optional)
+}
+```
+
+**Acceptance Criteria**:
+- [ ] Statement Compare correctly parses XLSX files with different column names
+- [ ] AI detects columns intelligently (not just exact string matches)
+- [ ] Works for all role group tabs (RD1/2, RD3/4, RM1/2, RM3/4, OVR/RD5, OTG)
+- [ ] Handles missing columns gracefully (shows clear error)
+- [ ] Comparison results are accurate after parsing
+- [ ] Performance is acceptable (AI analysis doesn't take too long)
+
+---
 
 #### Ticket: Add New Accounts and Line Items to Master Data 2
 **Goal**: Add functionality to create new accounts and add new line items to existing accounts in Master Data 2

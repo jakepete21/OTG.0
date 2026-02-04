@@ -129,6 +129,25 @@ export async function getMatchesForCarrierStatement(
 }
 
 /**
+ * Get all matches for a processing month
+ */
+export async function getMatchesForProcessingMonth(
+  processingMonth: string
+): Promise<MatchDoc[]> {
+  const matchesRef = collection(db, 'matches');
+  const q = query(
+    matchesRef,
+    where('processingMonth', '==', processingMonth)
+  );
+
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+  })) as MatchDoc[];
+}
+
+/**
  * Get a single carrier statement by ID
  * Note: This function is not efficient for Firestore - use getDoc instead
  * Keeping for compatibility but consider using getDoc directly in hooks

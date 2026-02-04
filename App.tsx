@@ -5,6 +5,7 @@ import MasterDataList2 from './components/MasterDataList2';
 import Dashboard from './components/Dashboard';
 import Disputes from './components/Disputes';
 import Reports from './components/Reports';
+import StatementCompare from './components/StatementCompare';
 import SyncTest from './components/SyncTest';
 import { AnalysisResult, CarrierStatementProcessingResult, MasterRecord } from './types';
 import { useMasterData2, useSaveMasterData2 } from './services/firebaseHooks';
@@ -57,6 +58,8 @@ const App: React.FC = () => {
         return <Disputes analysisResult={analysisResult} carrierStatementResult={carrierStatementResult} />;
       case 'commissions':
         return <Reports analysisResult={analysisResult} carrierStatementResult={carrierStatementResult} />;
+      case 'statement-compare':
+        return <StatementCompare />;
       case 'sync-test':
         return <SyncTest masterData={masterData2} columns={columns} onUpdate={handleMasterDataUpdate} />;
       default:

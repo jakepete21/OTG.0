@@ -2,14 +2,16 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { AnalysisResult, CommissionStatement, CarrierStatementProcessingResult, SellerStatement } from '../types';
 import { Download, ChevronDown, ChevronUp, User, DollarSign, AlertTriangle, Calendar, CheckCircle, XCircle, Trash2, RefreshCw } from 'lucide-react';
 import { exportCommissionStatementPDF } from '../services/pdfExport';
-import { useProcessingMonths, useSellerStatements, useCarrierStatements, useDeleteCarrierStatement, useRegenerateSellerStatements, useRemoveItemsFromSellerStatements } from '../services/firebaseHooks';
-import { CarrierType } from '../services/monthDetection';
+import { useProcessingMonths, useSellerStatements, useCarrierStatements, useAllCarrierStatements, useDeleteCarrierStatement, useRegenerateSellerStatements, useRemoveItemsFromSellerStatements, useFixCarrierStatementProcessingMonth } from '../services/firebaseHooks';
 import { getMatchesForCarrierStatement } from '../services/firebaseQueries';
+import { CarrierType } from '../services/monthDetection';
 import { formatCurrency } from '../services/numberFormat';
+import { markAsPendingDeletion, removePendingDeletion } from '../services/pendingDeletions';
 
 interface ReportsProps {
   analysisResult: AnalysisResult | null;
   carrierStatementResult: CarrierStatementProcessingResult | null;
+  masterData: any[]; // MasterRecord[]
 }
 
 const CARRIER_LABELS: Record<CarrierType, string> = {
@@ -41,6 +43,8 @@ interface MonthSectionProps {
   onDeleteCarrier: (statementId: string, carrier: string, processingMonth: string, sellerStatementsForMonth?: SellerStatement[]) => void;
   onRegenerate: () => void;
   isRegenerating: boolean;
+  onFixZayoProcessingMonth?: (zayoStatementId: string, correctProcessingMonth: string) => void;
+  zayoFixNeeded?: { statementId: string; currentMonth: string; correctMonth: string } | null;
   carrierStatementResult: CarrierStatementProcessingResult | null;
   optimisticSellerStatements: {
     monthKey: string;
@@ -64,6 +68,160 @@ interface AccountSummary {
 }
 
 /**
+ * Wrapper component that queries carrier statements directly for more reliable status
+ */
+const MonthSectionWithCarrierQuery: React.FC<Omit<MonthSectionProps, 'statusBadge' | 'statusColor' | 'allCarriers' | 'uploadedCarriers'> & {
+  monthData: MonthSectionProps['monthData'];
+  isExpanded: boolean;
+  onToggle: () => void;
+}> = (props) => {
+  const { monthData } = props;
+  
+  // Query carrier statements directly for this month to get most up-to-date data
+  const carrierStatementsForMonth = useCarrierStatements(monthData.monthKey);
+  
+  // Also get ALL carrier statements to debug if Zayo exists with wrong processing month
+  const allCarrierStatements = useAllCarrierStatements();
+  
+  // Get seller statements to check if Zayo data exists
+  const sellerStatementsForMonth = useSellerStatements(monthData.monthKey);
+  
+  
+  // Detect if Zayo has wrong processing month
+  // Show fix button if Zayo exists but has wrong processing month
+  // For now, show it if Zayo has wrong processing month and we're looking at February
+  // (since the diagnostic log shows Zayo should be in February based on RCVD date)
+  const zayoFixNeeded = useMemo(() => {
+    const zayoStatements = allCarrierStatements.filter(s => s.carrier === 'Zayo');
+    if (zayoStatements.length > 0) {
+      const zayo = zayoStatements[0];
+      
+      // Check if seller statements have Zayo data (indicating it should be here)
+      const hasZayoData = sellerStatementsForMonth && sellerStatementsForMonth.some(stmt => 
+        stmt.items.some((item: any) => item.provider === 'Zayo')
+      );
+      
+      // Calculate what processing month SHOULD be based on statement month + Zayo's +2 offset
+      let expectedProcessingMonth: string | null = null;
+      if (zayo.statementMonth) {
+        // Parse statement month (format: "YYYY-MM")
+        const [year, month] = zayo.statementMonth.split('-').map(Number);
+        const statementDate = new Date(year, month - 1, 1); // month is 1-indexed in string
+        // Add Zayo's +2 month offset
+        const processingDate = new Date(statementDate);
+        processingDate.setMonth(processingDate.getMonth() + 2);
+        expectedProcessingMonth = `${processingDate.getFullYear()}-${String(processingDate.getMonth() + 1).padStart(2, '0')}`;
+      }
+      
+      // Also check filename for RCVD date to calculate correct processing month
+      // If filename has "RCVD 2025-12", statement month should be December 2025 → February 2026
+      let rcvdBasedProcessingMonth: string | null = null;
+      if (zayo.filename && zayo.filename.toLowerCase().includes('rcvd')) {
+        const rcvdMatch = zayo.filename.toLowerCase().match(/rcvd\s+(\d{4})-(\d{1,2})/);
+        if (rcvdMatch) {
+          const rcvdYear = parseInt(rcvdMatch[1], 10);
+          const rcvdMonth = parseInt(rcvdMatch[2], 10) - 1; // JS months are 0-indexed
+          // For Zayo, statement month = RCVD month, processing month = RCVD month + 2
+          const rcvdProcessingDate = new Date(rcvdYear, rcvdMonth, 1);
+          rcvdProcessingDate.setMonth(rcvdProcessingDate.getMonth() + 2);
+          rcvdBasedProcessingMonth = `${rcvdProcessingDate.getFullYear()}-${String(rcvdProcessingDate.getMonth() + 1).padStart(2, '0')}`;
+        }
+      }
+      
+      // Show fix button if:
+      // - Zayo has wrong processing month AND
+      // - (Seller statements have Zayo data OR expected processing month matches current month OR RCVD-based processing month matches)
+      const shouldShowFix = zayo.processingMonth !== monthData.monthKey && 
+          (hasZayoData || 
+           expectedProcessingMonth === monthData.monthKey || 
+           rcvdBasedProcessingMonth === monthData.monthKey);
+      
+      if (shouldShowFix) {
+        return {
+          statementId: zayo.id,
+          currentMonth: zayo.processingMonth,
+          correctMonth: monthData.monthKey
+        };
+      }
+    }
+    return null;
+  }, [allCarrierStatements, monthData.monthKey, sellerStatementsForMonth]);
+  
+  // Merge carriers: START with monthData.carriers (immediate, already computed)
+  // Then enhance with direct query results once they arrive (for real-time updates)
+  // This ensures instant display while still getting real-time updates
+  const mergedCarriers = useMemo(() => {
+    // Start with monthData.carriers (immediate, no async delay)
+    const merged: Record<string, string> = { ...monthData.carriers };
+    
+    // Enhance with direct query results (once Firebase returns data)
+    // This ensures we get real-time updates if a statement is added/deleted
+    carrierStatementsForMonth.forEach(stmt => {
+      if (stmt.carrier) {
+        merged[stmt.carrier] = stmt.id;
+      }
+    });
+    
+    // Also check allCarrierStatements for this specific month (in case query missed it)
+    // This is a safety net - if direct query doesn't find it but it exists, include it
+    allCarrierStatements.forEach(stmt => {
+      if (stmt.carrier && stmt.processingMonth === monthData.monthKey && !merged[stmt.carrier]) {
+        merged[stmt.carrier] = stmt.id;
+      }
+    });
+    
+    // Only include Zayo if its processingMonth matches this month
+    // If seller statements have Zayo data but no matching Zayo statement for this month,
+    // don't add it to carriers (let the fix button handle mismatches)
+    if (!merged['Zayo']) {
+      const zayoStatement = allCarrierStatements.find(s => s.carrier === 'Zayo' && s.processingMonth === monthData.monthKey);
+      if (zayoStatement) {
+        merged['Zayo'] = zayoStatement.id;
+      }
+    }
+    
+    return merged;
+  }, [monthData.carriers, monthData.monthKey, carrierStatementsForMonth, allCarrierStatements]);
+  
+  const allCarriers: CarrierType[] = ['GoTo', 'Lumen', 'MetTel', 'TBO', 'Zayo', 'Allstream'];
+  const uploadedCarriers = Object.keys(mergedCarriers).filter(Boolean) as CarrierType[];
+  const uploadedCount = uploadedCarriers.length;
+  
+  // Recalculate status based on merged carriers (most reliable)
+  const actualStatus: 'complete' | 'partial' | 'empty' = 
+    uploadedCount === 0 ? 'empty' :
+    uploadedCount === 6 ? 'complete' :
+    'partial';
+  
+  
+  const statusBadge = actualStatus === 'complete' ? 'Complete' : 
+                     actualStatus === 'partial' ? `Partial (${uploadedCount}/6)` : 
+                     'Empty';
+  const statusColor = actualStatus === 'complete' ? 'bg-green-100 text-green-700' :
+                     actualStatus === 'partial' ? 'bg-amber-100 text-amber-700' :
+                     'bg-slate-100 text-slate-500';
+  
+  // Create monthData with merged carriers for MonthSection
+  const monthDataWithMergedCarriers = {
+    ...monthData,
+    carriers: mergedCarriers,
+    status: actualStatus,
+  };
+  
+  return (
+    <MonthSection
+      {...props}
+      monthData={monthDataWithMergedCarriers}
+      statusBadge={statusBadge}
+      statusColor={statusColor}
+      allCarriers={allCarriers}
+      uploadedCarriers={uploadedCarriers}
+      zayoFixNeeded={zayoFixNeeded}
+    />
+  );
+};
+
+/**
  * MonthSection component - displays a single expandable month with carrier status and seller statements
  */
 const MonthSection: React.FC<MonthSectionProps> = ({
@@ -85,6 +243,8 @@ const MonthSection: React.FC<MonthSectionProps> = ({
   optimisticSellerStatements,
   expandedRoleGroup,
   toggleRoleGroup,
+  onFixZayoProcessingMonth,
+  zayoFixNeeded,
 }) => {
   // View toggle: 'account' or 'line-item'
   const [sellerStatementView, setSellerStatementView] = useState<'account' | 'line-item'>('account');
@@ -92,11 +252,37 @@ const MonthSection: React.FC<MonthSectionProps> = ({
   // Use hooks for this specific month
   const sellerStatementsForMonth = useSellerStatements(monthData.monthKey);
   
+  // Note: mergedCarriers is now passed from MonthSectionWithCarrierQuery wrapper
+  // monthData.carriers already contains merged data from the wrapper
+  
   // Process seller statements
   const sellerStatements: SellerStatement[] = useMemo(() => {
     let statements: SellerStatement[] = [];
     
+    // Check for duplicates in Firebase data
     if (sellerStatementsForMonth && sellerStatementsForMonth.length > 0) {
+      // Check for duplicate document IDs
+      const docIds = sellerStatementsForMonth.map(s => s.id);
+      const uniqueDocIds = new Set(docIds);
+      if (docIds.length !== uniqueDocIds.size) {
+        console.warn(`[Reports] ⚠️ DUPLICATE DOCUMENT IDs detected in sellerStatementsForMonth: ${docIds.length} docs, ${uniqueDocIds.size} unique`);
+        const duplicates = docIds.filter((id, idx) => docIds.indexOf(id) !== idx);
+        console.warn(`[Reports] Duplicate IDs:`, duplicates);
+      }
+      
+      // Check for duplicate roleGroups
+      const roleGroups = sellerStatementsForMonth.map(s => s.roleGroup);
+      const roleGroupCounts = new Map<string, number>();
+      roleGroups.forEach(rg => roleGroupCounts.set(rg, (roleGroupCounts.get(rg) || 0) + 1));
+      const duplicateRoleGroups = Array.from(roleGroupCounts.entries()).filter(([_, count]) => count > 1);
+      if (duplicateRoleGroups.length > 0) {
+        console.warn(`[Reports] ⚠️ DUPLICATE ROLE GROUPS detected in Firebase:`, duplicateRoleGroups);
+        duplicateRoleGroups.forEach(([rg, count]) => {
+          const docs = sellerStatementsForMonth.filter(s => s.roleGroup === rg);
+          console.warn(`[Reports] RoleGroup ${rg} appears ${count} times with IDs:`, docs.map(d => d.id));
+        });
+      }
+      
       statements = sellerStatementsForMonth.map(stmt => ({
         roleGroup: stmt.roleGroup,
         items: stmt.items,
@@ -115,9 +301,11 @@ const MonthSection: React.FC<MonthSectionProps> = ({
 
     // Deduplicate statements with the same roleGroup by merging them
     const deduplicated = new Map<string, SellerStatement>();
-    statements.forEach(stmt => {
+    statements.forEach((stmt) => {
       const existing = deduplicated.get(stmt.roleGroup);
       if (existing) {
+        console.warn(`[Reports] ⚠️ Merging duplicate roleGroup ${stmt.roleGroup}`);
+        
         // Merge: combine items and recalculate totals
         const mergedItems = [...existing.items, ...stmt.items];
         deduplicated.set(stmt.roleGroup, {
@@ -169,6 +357,7 @@ const MonthSection: React.FC<MonthSectionProps> = ({
     
     return summaries;
   }, [sellerStatements]);
+  
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -201,6 +390,7 @@ const MonthSection: React.FC<MonthSectionProps> = ({
           <p className="text-xs font-medium text-slate-600 mb-2">Carrier Status:</p>
           <div className="flex flex-wrap gap-2">
             {allCarriers.map((carrier) => {
+              // Use monthData.carriers (already merged in wrapper component)
               const statementId = monthData.carriers[carrier];
               const statementIdStr = statementId ? String(statementId) : null;
               const isUploaded = !!statementId && !pendingDeletions.has(String(statementId));
@@ -308,6 +498,21 @@ const MonthSection: React.FC<MonthSectionProps> = ({
                   Line Item View
                 </button>
               </div>
+              {zayoFixNeeded && onFixZayoProcessingMonth && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm(`Fix Zayo processing month from "${zayoFixNeeded.currentMonth}" to "${zayoFixNeeded.correctMonth}"? This will update the Zayo statement and all its matches, then regenerate seller statements.`)) {
+                      onFixZayoProcessingMonth(zayoFixNeeded.statementId, zayoFixNeeded.correctMonth);
+                    }
+                  }}
+                  className="px-3 py-1.5 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700 flex items-center gap-2 transition-colors"
+                  title={`Fix Zayo processing month: ${zayoFixNeeded.currentMonth} → ${zayoFixNeeded.correctMonth}`}
+                >
+                  <AlertTriangle size={14} />
+                  Fix Zayo Month
+                </button>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -416,14 +621,14 @@ const MonthSection: React.FC<MonthSectionProps> = ({
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                               {stmt.items.map((item, itemIdx) => (
-                                <tr key={itemIdx} className="hover:bg-slate-50">
-                                  <td className="px-3 py-2 text-slate-600 text-xs">{item.state || '-'}</td>
-                                  <td className="px-3 py-2 font-mono font-medium text-slate-800 text-xs">{item.otgCompBillingItem || '-'}</td>
-                                  <td className="px-3 py-2 text-slate-800 text-xs">{item.accountName}</td>
-                                  <td className="px-3 py-2 text-slate-600 text-xs">{item.provider || '-'}</td>
-                                  <td className="px-3 py-2 text-right font-mono text-slate-600 text-xs">{formatCurrency(item.otgComp)}</td>
-                                  <td className="px-3 py-2 text-right font-mono font-medium text-indigo-600 text-xs">{formatCurrency(item.sellerComp)}</td>
-                                </tr>
+                                  <tr key={itemIdx} className="hover:bg-slate-50">
+                                    <td className="px-3 py-2 text-slate-600 text-xs">{item.state || '-'}</td>
+                                    <td className="px-3 py-2 font-mono font-medium text-slate-800 text-xs">{item.otgCompBillingItem || '-'}</td>
+                                    <td className="px-3 py-2 text-slate-800 text-xs">{item.accountName}</td>
+                                    <td className="px-3 py-2 text-slate-600 text-xs">{item.provider || '-'}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-slate-600 text-xs">{formatCurrency(item.otgComp)}</td>
+                                    <td className="px-3 py-2 text-right font-mono font-medium text-indigo-600 text-xs">{formatCurrency(item.sellerComp)}</td>
+                                  </tr>
                               ))}
                               <tr className="bg-indigo-50/50 font-bold border-t border-indigo-100">
                                 <td colSpan={4} className="px-3 py-2 text-right text-indigo-900 text-xs">Totals:</td>
@@ -446,7 +651,7 @@ const MonthSection: React.FC<MonthSectionProps> = ({
   );
 };
 
-const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResult }) => {
+const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResult, masterData }) => {
   const [expandedPerson, setExpandedPerson] = useState<string | null>(null);
   const [expandedRoleGroup, setExpandedRoleGroup] = useState<string | null>(null);
   const [expandedMonths, setExpandedMonths] = useState<Set<string>>(new Set());
@@ -557,6 +762,7 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
   const deleteCarrierStatement = useDeleteCarrierStatement();
   const regenerateSellerStatements = useRegenerateSellerStatements();
   const removeItemsFromSellerStatements = useRemoveItemsFromSellerStatements();
+  const fixCarrierStatementProcessingMonth = useFixCarrierStatementProcessingMonth();
   const [isRegenerating, setIsRegenerating] = useState(false);
   // Track regeneration timeout to batch multiple deletions
   const regenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -579,18 +785,19 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     const monthData = allMonths.find(m => m.monthKey === monthKey);
     const monthLabel = monthData?.monthLabel || monthKey;
     
-    if (!confirm(`Regenerate seller statements for ${monthLabel}? This will process all matches from all carriers and regenerate seller statements.`)) {
+    if (!confirm(`Regenerate seller statements for ${monthLabel}? This will re-extract carrier statement data, re-match against Comp Key, and regenerate seller statements.`)) {
       return;
     }
     
     try {
       setIsRegenerating(true);
-      console.log(`[Reports] Manual regeneration triggered for month: ${monthKey}`);
       
-      const result = await regenerateSellerStatements(monthKey);
+      if (masterData.length === 0) {
+        alert('Comp Key is empty. Please load Comp Key before regenerating seller statements.');
+        return;
+      }
       
-      console.log(`[Reports] Regeneration complete`);
-      console.log(`[Reports] Total matches processed: ${result.matchedRowsCount}`);
+      const result = await regenerateSellerStatements(monthKey, masterData);
       
       if (result.matchedRowsCount === 0) {
         alert('No matched rows found for this processing month. Please upload carrier statements first.');
@@ -599,7 +806,6 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
       
       alert(`Seller statements regenerated successfully!\n\nTotal matches: ${result.matchedRowsCount}\nSeller statement groups: ${result.sellerStatementGroups}`);
     } catch (error: any) {
-      console.error('[Reports] Error regenerating seller statements:', error);
       alert(`Failed to regenerate seller statements: ${error.message}`);
     } finally {
       setIsRegenerating(false);
@@ -620,14 +826,15 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     setDeletingStatementId(statementId);
     setDeleteConfirmStatementId(null);
     
+    // Mark as pending deletion globally (so Dashboard.tsx can check it)
+    markAsPendingDeletion(statementId, carrier, processingMonth);
+    
     // Fetch matches for this statement to optimistically filter seller statements
     let matchesToRemove: any[] = [];
     try {
       const matches = await getMatchesForCarrierStatement(statementId);
       matchesToRemove = matches.map(m => m.matchedRow);
-      console.log(`[Reports] Found ${matchesToRemove.length} matches to remove optimistically`);
     } catch (error: any) {
-      console.warn('[Reports] Could not fetch matches for optimistic update:', error);
       // Continue with deletion even if we can't fetch matches
     }
 
@@ -673,11 +880,8 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
     // Continue with backend deletion in background
     (async () => {
       try {
-        console.log(`[Reports] Deleting carrier ${carrier} statement ${statementId} for month ${processingMonth}`);
-        
         // Delete the statement - function handles deleting matches and returns deleted matches
         const result = await deleteCarrierStatement(statementId);
-        console.log(`[Reports] Statement deleted successfully, ${result.deletedMatchesCount} matches removed`);
         
         // Clear this statement from pending deletions immediately (deletion succeeded)
         setPendingDeletions(prev => {
@@ -685,6 +889,9 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
           next.delete(statementId);
           return next;
         });
+        
+        // Remove from global pending deletions tracker
+        removePendingDeletion(statementId);
         
         // Clear optimistic seller statements for this specific deletion
         // (Firebase hooks will update with real data)
@@ -722,19 +929,17 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
             pendingDeletedMatchesRef.current = [];
             
             for (const update of updatesToProcess) {
-              console.log(`[Reports] Updating seller statements for ${update.processingMonth} (removing ${update.matches.length} items directly)`);
               // Add a small delay to ensure all deletions are committed
               await new Promise(resolve => setTimeout(resolve, 200));
               await removeItemsFromSellerStatements(update.processingMonth, update.matches);
-              console.log(`[Reports] Seller statements updated (items removed directly)`);
             }
           } catch (error: any) {
-            console.error('[Reports] Error updating seller statements:', error);
             // Fallback to regeneration if direct update fails
-            console.log('[Reports] Falling back to full regeneration...');
             const monthsToRegenerate = [...new Set(pendingDeletedMatchesRef.current.map(p => p.processingMonth))];
             for (const month of monthsToRegenerate) {
-              await regenerateSellerStatements(month);
+              if (masterData.length > 0) {
+                await regenerateSellerStatements(month, masterData);
+              }
             }
             pendingDeletedMatchesRef.current = [];
           }
@@ -742,14 +947,16 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
         }, 500); // Wait 500ms for potential additional deletions
         
       } catch (error: any) {
-        console.error('[Reports] Error deleting statement:', error);
-        
         // Restore UI if deletion failed
         setPendingDeletions(prev => {
           const next = new Set(prev);
           next.delete(statementId);
           return next;
         });
+        
+        // Remove from global pending deletions tracker (deletion failed, restore it)
+        removePendingDeletion(statementId);
+        
         if (optimisticSellerStatements?.statementId === statementId) {
           setOptimisticSellerStatements(null);
         }
@@ -821,42 +1028,37 @@ const Reports: React.FC<ReportsProps> = ({ analysisResult, carrierStatementResul
 
       {/* Expandable Month Sections */}
       <div className="space-y-4">
-        {allMonths.map((monthData) => {
-          const isExpanded = expandedMonths.has(monthData.monthKey);
-          const allCarriers: CarrierType[] = ['GoTo', 'Lumen', 'MetTel', 'TBO', 'Zayo', 'Allstream'];
-          const uploadedCarriers = Object.keys(monthData.carriers).filter(Boolean) as CarrierType[];
-          const uploadedCount = uploadedCarriers.length;
-          const statusBadge = monthData.status === 'complete' ? 'Complete' : 
-                             monthData.status === 'partial' ? `Partial (${uploadedCount}/6)` : 
-                             'Empty';
-          const statusColor = monthData.status === 'complete' ? 'bg-green-100 text-green-700' :
-                             monthData.status === 'partial' ? 'bg-amber-100 text-amber-700' :
-                             'bg-slate-100 text-slate-500';
-          
-          return (
-            <MonthSection
-              key={monthData.monthKey}
-              monthData={monthData}
-              isExpanded={isExpanded}
-              onToggle={() => toggleMonthExpansion(monthData.monthKey)}
-              statusBadge={statusBadge}
-              statusColor={statusColor}
-              allCarriers={allCarriers}
-              uploadedCarriers={uploadedCarriers}
-              pendingDeletions={pendingDeletions}
-              deletingStatementId={deletingStatementId}
-              deleteConfirmStatementId={deleteConfirmStatementId}
-              setDeleteConfirmStatementId={setDeleteConfirmStatementId}
-              onDeleteCarrier={handleDeleteCarrier}
-              onRegenerate={() => handleRegenerateSellerStatements(monthData.monthKey)}
-              isRegenerating={isRegenerating}
-              carrierStatementResult={carrierStatementResult}
-              optimisticSellerStatements={optimisticSellerStatements}
-              expandedRoleGroup={expandedRoleGroup}
-              toggleRoleGroup={toggleRoleGroup}
-            />
-          );
-        })}
+        {allMonths.map((monthData) => (
+          <MonthSectionWithCarrierQuery
+            key={monthData.monthKey}
+            monthData={monthData}
+            isExpanded={expandedMonths.has(monthData.monthKey)}
+            onToggle={() => toggleMonthExpansion(monthData.monthKey)}
+            pendingDeletions={pendingDeletions}
+            deletingStatementId={deletingStatementId}
+            deleteConfirmStatementId={deleteConfirmStatementId}
+            setDeleteConfirmStatementId={setDeleteConfirmStatementId}
+            onDeleteCarrier={handleDeleteCarrier}
+            onRegenerate={() => handleRegenerateSellerStatements(monthData.monthKey)}
+            isRegenerating={isRegenerating}
+            onFixZayoProcessingMonth={async (statementId: string, correctProcessingMonth: string) => {
+              try {
+                setIsRegenerating(true);
+                await fixCarrierStatementProcessingMonth(statementId, correctProcessingMonth);
+                await handleRegenerateSellerStatements(correctProcessingMonth);
+              } catch (error: any) {
+                console.error(`[Reports] Error fixing Zayo processing month:`, error);
+                alert(`Error fixing Zayo processing month: ${error.message}`);
+              } finally {
+                setIsRegenerating(false);
+              }
+            }}
+            carrierStatementResult={carrierStatementResult}
+            optimisticSellerStatements={optimisticSellerStatements}
+            expandedRoleGroup={expandedRoleGroup}
+            toggleRoleGroup={toggleRoleGroup}
+          />
+        ))}
       </div>
 
       {/* Vendor Statement Commissions */}

@@ -40,11 +40,15 @@ export const detectStatementMonth = (filename: string, content?: string): Date |
   const text = `${filename} ${content || ''}`.toLowerCase();
   
   // Try YYYY-MM pattern first (most reliable)
+  // Use the FIRST occurrence found in the filename
   const yyyyMmMatch = text.match(/(\d{4})-(\d{1,2})/);
   if (yyyyMmMatch) {
     const year = parseInt(yyyyMmMatch[1], 10);
     const month = parseInt(yyyyMmMatch[2], 10) - 1; // JS months are 0-indexed
     if (year >= 2020 && year <= 2100 && month >= 0 && month <= 11) {
+      if (text.includes('zayo')) {
+        console.log(`[detectStatementMonth] Zayo detected first YYYY-MM pattern: ${year}-${month + 1}`);
+      }
       return new Date(year, month, 1);
     }
   }
@@ -160,6 +164,15 @@ export const detectCarrierAndMonth = (
     processingMonth = calculateProcessingMonth(statementMonth, carrier);
     processingMonthKey = getMonthKey(processingMonth);
     processingMonthLabel = formatProcessingMonth(processingMonth);
+    
+    // Diagnostic logging for Zayo files
+    if (carrier === 'Zayo') {
+      console.log(`[detectCarrierAndMonth] ZAYO DETECTION:`);
+      console.log(`  Filename: ${filename}`);
+      console.log(`  Detected statementMonth: ${getMonthKey(statementMonth)} (${formatProcessingMonth(statementMonth)})`);
+      console.log(`  Calculated processingMonth: ${processingMonthKey} (${processingMonthLabel})`);
+      console.log(`  Zayo offset: +2 months`);
+    }
   }
   
   return {

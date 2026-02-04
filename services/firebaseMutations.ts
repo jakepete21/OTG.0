@@ -15,10 +15,14 @@ import {
   writeBatch,
   Timestamp,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL, deleteObject, getBytes } from 'firebase/storage';
 import { db, storage } from './firebaseClient';
 import { generateSellerStatements } from './sellerStatements';
-import { MatchedRow } from '../types';
+import { MatchedRow, CarrierStatementRow, MasterRecord } from '../types';
+import { matchCarrierStatements } from './matchingService';
+import { extractCarrierStatementData } from './carrierStatementProcessor';
+import { getFileUrl, getCarrierStatements } from './firebaseQueries';
+import { processCarrierStatement } from './carrierStatementPipeline';
 
 /**
  * Remove undefined values and clean data for Firestore compatibility
@@ -243,19 +247,9 @@ export async function uploadCarrierStatement(
     });
   }
 
-  // Clear seller statements for this processing month (will be regenerated)
-  const sellerStatementsRef = collection(db, 'sellerStatements');
-  const sellerQuery = query(
-    sellerStatementsRef,
-    where('processingMonth', '==', processingMonth)
-  );
-  const sellerSnapshot = await getDocs(sellerQuery);
-  
-  const batch = writeBatch(db);
-  sellerSnapshot.docs.forEach((sellerDoc) => {
-    batch.delete(sellerDoc.ref);
-  });
-  await batch.commit();
+  // Note: Seller statements are NOT deleted here anymore
+  // They are updated incrementally by addItemsToSellerStatements() after matches are stored
+  // This allows multiple carriers to coexist without conflicts
 
   return { statementId, isReplacement, fileUrl };
 }
@@ -277,15 +271,16 @@ export async function storeMatches(
   // Firestore batch limit: 500 operations per batch
   // Use 450 to leave some headroom for safety
   const BATCH_SIZE = 450;
-  let totalStored = 0;
-
+  const CONCURRENT_BATCHES = 5; // Process up to 5 batches in parallel
   const totalBatches = Math.ceil(matchedRowsBatch.length / BATCH_SIZE);
 
-  // Process in chunks to avoid "Transaction too big" error
+  // Prepare all batches upfront
+  const batchPromises: Array<{ batch: ReturnType<typeof writeBatch>, chunk: MatchedRow[], batchNumber: number }> = [];
+  
   for (let i = 0; i < matchedRowsBatch.length; i += BATCH_SIZE) {
     const chunk = matchedRowsBatch.slice(i, i + BATCH_SIZE);
     const batch = writeBatch(db);
-    const currentBatch = Math.floor(i / BATCH_SIZE) + 1;
+    const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
 
     chunk.forEach((matchedRow) => {
       const matchDocRef = doc(matchesRef);
@@ -299,21 +294,38 @@ export async function storeMatches(
       });
     });
 
-    await batch.commit();
-    totalStored += chunk.length;
-    
-    // Report progress
-    if (onProgress) {
-      onProgress(currentBatch, totalBatches);
-    }
-    
-    // Log progress for large batches
-    if (matchedRowsBatch.length > BATCH_SIZE) {
-      console.log(`[storeMatches] Stored batch ${currentBatch}/${totalBatches} (${chunk.length} matches)`);
-    }
+    batchPromises.push({ batch, chunk, batchNumber });
   }
 
-  return { success: true, count: totalStored };
+  // Process batches in parallel with concurrency limit
+  let completedBatches = 0;
+  const processBatch = async (batchData: typeof batchPromises[0]) => {
+    try {
+      await batchData.batch.commit();
+      completedBatches++;
+      
+      // Report progress
+      if (onProgress) {
+        onProgress(completedBatches, totalBatches);
+      }
+      
+      // Log progress for large batches
+      if (matchedRowsBatch.length > BATCH_SIZE) {
+        console.log(`[storeMatches] Stored batch ${batchData.batchNumber}/${totalBatches} (${batchData.chunk.length} matches)`);
+      }
+    } catch (error) {
+      console.error(`[storeMatches] Error storing batch ${batchData.batchNumber}:`, error);
+      throw error;
+    }
+  };
+
+  // Process batches with concurrency limit
+  for (let i = 0; i < batchPromises.length; i += CONCURRENT_BATCHES) {
+    const batchChunk = batchPromises.slice(i, i + CONCURRENT_BATCHES);
+    await Promise.all(batchChunk.map(processBatch));
+  }
+
+  return { success: true, count: matchedRowsBatch.length };
 }
 
 /**
@@ -404,22 +416,241 @@ export async function removeItemsFromSellerStatements(
 }
 
 /**
- * Regenerate seller statements from all matches for a processing month
- * Client calls this after storing all matches
+ * Add new matched rows to existing seller statements incrementally
+ * Much more efficient than regenerating everything - just adds new items and aggregates amounts
+ */
+// Track function calls to detect if it's being called multiple times
+const addItemsCallTracker = new Map<string, number>();
+
+export async function addItemsToSellerStatements(
+  processingMonth: string,
+  newMatches: MatchedRow[]
+): Promise<{ success: boolean; updatedGroups: number; addedItemsCount: number }> {
+  if (newMatches.length === 0) {
+    return { success: true, updatedGroups: 0, addedItemsCount: 0 };
+  }
+
+  // Track function calls
+  const callKey = `${processingMonth}-${Date.now()}`;
+  const callCount = (addItemsCallTracker.get(processingMonth) || 0) + 1;
+  addItemsCallTracker.set(processingMonth, callCount);
+  
+  console.log(`\n========== [addItemsToSellerStatements] CALL #${callCount} for ${processingMonth} ==========`);
+  console.log(`[addItemsToSellerStatements] Stack trace:`, new Error().stack?.split('\n').slice(1, 4).join('\n'));
+  console.log(`[addItemsToSellerStatements] Adding ${newMatches.length} new matches to seller statements for ${processingMonth}`);
+
+  console.log(`========== END [addItemsToSellerStatements] CALL #${callCount} ==========\n`);
+
+  // Generate seller statements from new matches
+  const newSellerStatements = generateSellerStatements(newMatches);
+  console.log(`[addItemsToSellerStatements] Generated ${newSellerStatements.length} seller statement groups from new matches`);
+
+  // Get existing seller statements for this processing month
+  const sellerStatementsRef = collection(db, 'sellerStatements');
+  const sellerQuery = query(
+    sellerStatementsRef,
+    where('processingMonth', '==', processingMonth)
+  );
+  const sellerSnapshot = await getDocs(sellerQuery);
+
+  // Create a map of existing seller statements by role group
+  const existingStatementsMap = new Map<string, { docId: string; data: any }>();
+  sellerSnapshot.docs.forEach((doc) => {
+    const data = doc.data();
+    const roleGroup = data.roleGroup;
+    if (roleGroup) {
+      existingStatementsMap.set(roleGroup, { docId: doc.id, data });
+    }
+  });
+
+  const batch = writeBatch(db);
+  let updatedGroups = 0;
+  let addedItemsCount = 0;
+  const processedAt = Timestamp.now();
+
+  // Process each new seller statement group
+  for (const newStmt of newSellerStatements) {
+    const existing = existingStatementsMap.get(newStmt.roleGroup);
+
+    if (!existing) {
+      // No existing statement for this role group - create new document
+      const newDocRef = doc(sellerStatementsRef);
+      const cleanedStmt = removeUndefinedValues({
+        processingMonth,
+        roleGroup: newStmt.roleGroup,
+        items: newStmt.items,
+        totalOtgComp: newStmt.totalOtgComp,
+        totalSellerComp: newStmt.totalSellerComp,
+        processedAt,
+      });
+      batch.set(newDocRef, cleanedStmt);
+      addedItemsCount += newStmt.items.length;
+      updatedGroups++;
+      console.log(`[addItemsToSellerStatements] Created new seller statement group: ${newStmt.roleGroup} with ${newStmt.items.length} items`);
+    } else {
+      // Merge with existing statement
+      const existingItems: any[] = existing.data.items || [];
+      
+      // Create a map of existing items by key (billingItem|accountName)
+      const existingItemsMap = new Map<string, any>();
+      existingItems.forEach((item: any) => {
+        const key = `${item.otgCompBillingItem}|${item.accountName}`;
+        existingItemsMap.set(key, item);
+      });
+
+      // Merge new items with existing items
+      const mergedItems: any[] = [...existingItems];
+      
+      newStmt.items.forEach((newItem: any) => {
+        const key = `${newItem.otgCompBillingItem}|${newItem.accountName}`;
+        const existingItem = existingItemsMap.get(key);
+        
+        if (existingItem) {
+          // Item already exists - aggregate amounts
+          const existingIndex = mergedItems.findIndex(
+            (item: any) => 
+              item.otgCompBillingItem === newItem.otgCompBillingItem &&
+              item.accountName === newItem.accountName
+          );
+          
+          if (existingIndex >= 0) {
+            mergedItems[existingIndex] = {
+              ...mergedItems[existingIndex],
+              otgComp: (mergedItems[existingIndex].otgComp || 0) + (newItem.otgComp || 0),
+              sellerComp: (mergedItems[existingIndex].sellerComp || 0) + (newItem.sellerComp || 0),
+            };
+          }
+        } else {
+          // New item - add it
+          mergedItems.push(newItem);
+          addedItemsCount++;
+        }
+      });
+
+      // Recalculate totals
+      const totalOtgComp = mergedItems.reduce((sum, item) => sum + (item.otgComp || 0), 0);
+      const totalSellerComp = mergedItems.reduce((sum, item) => sum + (item.sellerComp || 0), 0);
+
+      // Sort merged items (same sorting logic as generateSellerStatements)
+      mergedItems.sort((a, b) => {
+        const pa = (a.provider || '').toLowerCase();
+        const pb = (b.provider || '').toLowerCase();
+        if (pa !== pb) return pa < pb ? -1 : 1;
+        
+        const aa = (a.accountName || '').toLowerCase();
+        const ab = (b.accountName || '').toLowerCase();
+        if (aa !== ab) return aa < ab ? -1 : 1;
+        
+        const sa = (a.otgCompBillingItem || '').toLowerCase();
+        const sb = (b.otgCompBillingItem || '').toLowerCase();
+        return sa < sb ? -1 : sa > sb ? 1 : 0;
+      });
+
+      // Update the document
+      const existingDocRef = doc(sellerStatementsRef, existing.docId);
+      const cleanedUpdate = removeUndefinedValues({
+        items: mergedItems,
+        totalOtgComp,
+        totalSellerComp,
+        processedAt,
+      });
+      batch.update(existingDocRef, cleanedUpdate);
+      updatedGroups++;
+      console.log(`[addItemsToSellerStatements] Updated seller statement group: ${newStmt.roleGroup} - added ${newStmt.items.length} items, total items now: ${mergedItems.length}`);
+    }
+  }
+
+  await batch.commit();
+
+  console.log(`[addItemsToSellerStatements] Added ${addedItemsCount} items to ${updatedGroups} seller statement groups`);
+
+  return {
+    success: true,
+    updatedGroups,
+    addedItemsCount,
+  };
+}
+
+/**
+ * Regenerate seller statements by re-running matching from carrier statements
+ * Deletes existing matches, re-extracts carrier statement data, re-matches against master data,
+ * stores new matches, and regenerates seller statements
  */
 export async function regenerateSellerStatements(
-  processingMonth: string
+  processingMonth: string,
+  masterData: MasterRecord[]
 ): Promise<{ success: boolean; matchedRowsCount: number; sellerStatementGroups: number }> {
-  // Get all matches for this processing month
+  console.log(`[regenerateSellerStatements] Starting full regeneration for ${processingMonth}`);
+  console.log(`[regenerateSellerStatements] Master data records: ${masterData.length}`);
+
+  // Step 1: Delete all existing matches for this processing month
   const matchesRef = collection(db, 'matches');
   const matchesQuery = query(
     matchesRef,
     where('processingMonth', '==', processingMonth)
   );
   const matchesSnapshot = await getDocs(matchesQuery);
+  
+  const existingMatchesCount = matchesSnapshot.docs.length;
+  console.log(`[regenerateSellerStatements] Deleting ${existingMatchesCount} existing matches`);
+  
+  // Delete matches in batches
+  const DELETE_BATCH_SIZE = 450;
+  const matchDocs = matchesSnapshot.docs;
+  const totalMatchBatches = Math.ceil(matchDocs.length / DELETE_BATCH_SIZE);
+  for (let i = 0; i < matchDocs.length; i += DELETE_BATCH_SIZE) {
+    const chunk = matchDocs.slice(i, i + DELETE_BATCH_SIZE);
+    const deleteBatch = writeBatch(db);
+    chunk.forEach((matchDoc) => {
+      deleteBatch.delete(matchDoc.ref);
+    });
+    await deleteBatch.commit();
+    const currentBatch = Math.floor(i / DELETE_BATCH_SIZE) + 1;
+    console.log(`[regenerateSellerStatements] Deleted ${chunk.length} matches (batch ${currentBatch}/${totalMatchBatches})`);
+    
+    if (currentBatch < totalMatchBatches) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
 
-  if (matchesSnapshot.empty) {
-    // Clear existing seller statements
+  // Step 2: Get all carrier statements for this processing month
+  // First, get ALL carrier statements to debug any processing month mismatches
+  const allCarrierStatements = await getCarrierStatements();
+  console.log(`[regenerateSellerStatements] Total carrier statements in database: ${allCarrierStatements.length}`);
+  console.log(`[regenerateSellerStatements] All carrier statements:`, allCarrierStatements.map(s => ({
+    id: s.id,
+    carrier: s.carrier,
+    filename: s.filename,
+    processingMonth: s.processingMonth,
+    statementMonth: s.statementMonth
+  })));
+  
+  // Filter by processing month
+  const carrierStatements = allCarrierStatements.filter(s => s.processingMonth === processingMonth);
+  console.log(`[regenerateSellerStatements] Found ${carrierStatements.length} carrier statement(s) for processing month ${processingMonth}`);
+  console.log(`[regenerateSellerStatements] Carrier statements for ${processingMonth}:`, carrierStatements.map(s => ({
+    id: s.id,
+    carrier: s.carrier,
+    filename: s.filename,
+    processingMonth: s.processingMonth
+  })));
+  
+  // Check if there are carrier statements with different processing months that might be relevant
+  const otherMonthStatements = allCarrierStatements.filter(s => s.processingMonth !== processingMonth);
+  if (otherMonthStatements.length > 0) {
+    console.warn(`[regenerateSellerStatements] ⚠️ Found ${otherMonthStatements.length} carrier statement(s) with different processing months:`, 
+      otherMonthStatements.map(s => ({
+        id: s.id,
+        carrier: s.carrier,
+        filename: s.filename,
+        processingMonth: s.processingMonth,
+        statementMonth: s.statementMonth
+      }))
+    );
+  }
+
+  if (carrierStatements.length === 0) {
+    // No carrier statements - clear seller statements and return
     const sellerStatementsRef = collection(db, 'sellerStatements');
     const sellerQuery = query(
       sellerStatementsRef,
@@ -436,22 +667,108 @@ export async function regenerateSellerStatements(
     return { success: true, matchedRowsCount: 0, sellerStatementGroups: 0 };
   }
 
-  // Convert Firestore matches to MatchedRow array
-  const matchedRows: MatchedRow[] = matchesSnapshot.docs.map((doc) => doc.data().matchedRow);
+  // Step 3: Re-process each carrier statement
+  const allMatchedRows: MatchedRow[] = [];
+  const processedCarriers: string[] = [];
+  const failedCarriers: Array<{ carrier: string; filename: string; error: string }> = [];
   
-  // Log match statistics for debugging
-  const matchStats = matchesSnapshot.docs.reduce((acc, doc) => {
-    const data = doc.data();
-    const carrierId = data.carrierStatementId || 'unknown';
-    acc[carrierId] = (acc[carrierId] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  console.log(`[regenerateSellerStatements] Starting to re-process ${carrierStatements.length} carrier statement(s)`);
   
-  console.log(`[regenerateSellerStatements] Processing ${matchedRows.length} total matches for ${processingMonth}`);
-  console.log(`[regenerateSellerStatements] Matches by carrier statement:`, matchStats);
+  for (const carrierStatement of carrierStatements) {
+    console.log(`[regenerateSellerStatements] Re-processing carrier statement: ${carrierStatement.filename} (${carrierStatement.carrier})`);
+    console.log(`[regenerateSellerStatements] Statement ID: ${carrierStatement.id}, Processing Month: ${carrierStatement.processingMonth}`);
+    
+    try {
+      // Download file from Firebase Storage
+      // Try using getBytes() first (requires CORS configuration)
+      // If that fails, fall back to using the stored download URL
+      let fileBytes: Uint8Array;
+      
+      try {
+        // Reconstruct storage path: carrier-statements/{processingMonth}/{carrier}/{filename}
+        const storagePath = `carrier-statements/${processingMonth}/${carrierStatement.carrier}/${carrierStatement.filename}`;
+        console.log(`[regenerateSellerStatements] Attempting to download file from storage path: ${storagePath}`);
+        const storageRef = ref(storage, storagePath);
+        fileBytes = await getBytes(storageRef);
+        console.log(`[regenerateSellerStatements] Successfully downloaded ${fileBytes.length} bytes for ${carrierStatement.carrier}`);
+      } catch (corsError: any) {
+        // If getBytes() fails due to CORS, provide helpful error message
+        const errorMessage = corsError.message || String(corsError);
+        if (errorMessage.includes('CORS') || errorMessage.includes('Access-Control-Allow-Origin')) {
+          console.error(`[regenerateSellerStatements] CORS error: Firebase Storage CORS is not configured.`);
+          console.error(`[regenerateSellerStatements] To fix this, run: ./scripts/configure-storage-cors.sh`);
+          console.error(`[regenerateSellerStatements] Or configure CORS manually using gsutil: gsutil cors set firestore/storage.cors.json gs://otg0-109bd.firebasestorage.app`);
+          throw new Error(
+            `CORS configuration required: Firebase Storage CORS is not configured for your browser origin. ` +
+            `Please run: ./scripts/configure-storage-cors.sh ` +
+            `See firestore/storage.cors.json for configuration details.`
+          );
+        }
+        throw corsError;
+      }
+      
+      // Convert bytes to File object
+      const blob = new Blob([fileBytes]);
+      const file = new File([blob], carrierStatement.filename, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      
+      // Re-extract and re-match
+      console.log(`[regenerateSellerStatements] Processing file ${carrierStatement.filename} with master data (${masterData.length} records)`);
+      const result = await processCarrierStatement(file, masterData);
+      
+      console.log(`[regenerateSellerStatements] Re-matched ${result.matchedRows.length} rows for ${carrierStatement.carrier}`);
+      
+      
+      // Store new matches
+      console.log(`[regenerateSellerStatements] Storing ${result.matchedRows.length} matches for ${carrierStatement.carrier}`);
+      await storeMatches(processingMonth, carrierStatement.id, result.matchedRows);
+      
+      allMatchedRows.push(...result.matchedRows);
+      processedCarriers.push(carrierStatement.carrier);
+      console.log(`[regenerateSellerStatements] ✅ Successfully processed ${carrierStatement.carrier}`);
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error);
+      console.error(`[regenerateSellerStatements] ❌ Error re-processing ${carrierStatement.filename} (${carrierStatement.carrier}):`, error);
+      console.error(`[regenerateSellerStatements] Error details:`, {
+        carrier: carrierStatement.carrier,
+        filename: carrierStatement.filename,
+        statementId: carrierStatement.id,
+        processingMonth: carrierStatement.processingMonth,
+        error: errorMessage,
+        stack: error?.stack
+      });
+      failedCarriers.push({
+        carrier: carrierStatement.carrier,
+        filename: carrierStatement.filename,
+        error: errorMessage
+      });
+      // Continue with other carrier statements
+    }
+  }
+  
+  console.log(`[regenerateSellerStatements] Processing summary:`);
+  console.log(`[regenerateSellerStatements] - Successfully processed carriers: ${processedCarriers.join(', ') || 'none'}`);
+  console.log(`[regenerateSellerStatements] - Failed carriers: ${failedCarriers.map(f => `${f.carrier} (${f.filename})`).join(', ') || 'none'}`);
+  console.log(`[regenerateSellerStatements] - Total matched rows: ${allMatchedRows.length}`);
 
-  // Generate seller statements using client-side logic
-  const sellerStatements = generateSellerStatements(matchedRows);
+  console.log(`[regenerateSellerStatements] Total matched rows after re-matching: ${allMatchedRows.length}`);
+  
+  if (failedCarriers.length > 0) {
+    console.warn(`[regenerateSellerStatements] ⚠️ WARNING: ${failedCarriers.length} carrier statement(s) failed to process:`);
+    failedCarriers.forEach(f => {
+      console.warn(`[regenerateSellerStatements]   - ${f.carrier}: ${f.filename} - ${f.error}`);
+    });
+    console.warn(`[regenerateSellerStatements] These carriers will NOT be included in the regenerated seller statements.`);
+  }
+  
+  if (allMatchedRows.length === 0 && carrierStatements.length > 0) {
+    console.warn(`[regenerateSellerStatements] ⚠️ WARNING: No matched rows generated despite ${carrierStatements.length} carrier statement(s) found.`);
+    console.warn(`[regenerateSellerStatements] This might indicate a problem with matching logic or master data.`);
+  }
+
+
+  // Step 4: Generate seller statements from all re-matched rows
+  // Step 4: Generate seller statements from all re-matched rows
+  const sellerStatements = generateSellerStatements(allMatchedRows);
 
   // Delete existing seller statements in batches (Firestore limit: 500 operations per batch)
   const sellerStatementsRef = collection(db, 'sellerStatements');
@@ -461,8 +778,7 @@ export async function regenerateSellerStatements(
   );
   const sellerSnapshot = await getDocs(sellerQuery);
   
-  // Delete in batches if needed
-  const DELETE_BATCH_SIZE = 450;
+  // Delete in batches if needed (reuse DELETE_BATCH_SIZE from above)
   const sellerDocs = sellerSnapshot.docs;
   const totalSellerBatches = Math.ceil(sellerDocs.length / DELETE_BATCH_SIZE);
   for (let i = 0; i < sellerDocs.length; i += DELETE_BATCH_SIZE) {
@@ -502,7 +818,7 @@ export async function regenerateSellerStatements(
 
   return {
     success: true,
-    matchedRowsCount: matchedRows.length,
+    matchedRowsCount: allMatchedRows.length,
     sellerStatementGroups: sellerStatements.length,
   };
 }
@@ -739,4 +1055,78 @@ export async function deleteMasterData2Record(
 ): Promise<void> {
   const recordRef = doc(db, 'masterData2', recordId);
   await deleteDoc(recordRef);
+}
+
+/**
+ * Fix processing month on a carrier statement
+ * Useful when a carrier statement was uploaded with incorrect processing month
+ */
+export async function fixCarrierStatementProcessingMonth(
+  statementId: string,
+  correctProcessingMonth: string
+): Promise<void> {
+  const statementRef = doc(db, 'carrierStatements', statementId);
+  const statementDoc = await getDoc(statementRef);
+  
+  if (!statementDoc.exists()) {
+    throw new Error(`Carrier statement with id ${statementId} not found`);
+  }
+  
+  const currentData = statementDoc.data();
+  const currentProcessingMonth = currentData.processingMonth;
+  
+  if (currentProcessingMonth === correctProcessingMonth) {
+    console.log(`[fixCarrierStatementProcessingMonth] Statement ${statementId} already has correct processingMonth: ${correctProcessingMonth}`);
+    return;
+  }
+  
+  console.log(`[fixCarrierStatementProcessingMonth] Updating statement ${statementId}:`);
+  console.log(`  Current processingMonth: ${currentProcessingMonth}`);
+  console.log(`  New processingMonth: ${correctProcessingMonth}`);
+  
+  // Update the carrier statement
+  await setDoc(
+    statementRef,
+    {
+      processingMonth: correctProcessingMonth,
+    },
+    { merge: true }
+  );
+  
+  // Update all matches for this statement to have the correct processing month
+  const matchesRef = collection(db, 'matches');
+  const matchesQuery = query(
+    matchesRef,
+    where('carrierStatementId', '==', statementId)
+  );
+  const matchesSnapshot = await getDocs(matchesQuery);
+  
+  if (matchesSnapshot.docs.length > 0) {
+    console.log(`[fixCarrierStatementProcessingMonth] Updating ${matchesSnapshot.docs.length} matches to have processingMonth: ${correctProcessingMonth}`);
+    
+    const UPDATE_BATCH_SIZE = 450;
+    const matchDocs = matchesSnapshot.docs;
+    const totalBatches = Math.ceil(matchDocs.length / UPDATE_BATCH_SIZE);
+    
+    for (let i = 0; i < matchDocs.length; i += UPDATE_BATCH_SIZE) {
+      const chunk = matchDocs.slice(i, i + UPDATE_BATCH_SIZE);
+      const batch = writeBatch(db);
+      
+      chunk.forEach((matchDoc) => {
+        batch.update(matchDoc.ref, {
+          processingMonth: correctProcessingMonth,
+        });
+      });
+      
+      await batch.commit();
+      const currentBatch = Math.floor(i / UPDATE_BATCH_SIZE) + 1;
+      console.log(`[fixCarrierStatementProcessingMonth] Updated ${chunk.length} matches (batch ${currentBatch}/${totalBatches})`);
+      
+      if (currentBatch < totalBatches) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
+  }
+  
+  console.log(`[fixCarrierStatementProcessingMonth] ✅ Successfully updated statement ${statementId} and ${matchesSnapshot.docs.length} matches`);
 }

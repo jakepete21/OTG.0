@@ -1,5 +1,5 @@
 import React, { ReactNode } from 'react';
-import { UploadCloud, Users, AlertTriangle, FileText, Settings, Menu, RefreshCw } from 'lucide-react';
+import { UploadCloud, Users, AlertTriangle, FileText, Settings, Menu, RefreshCw, GitCompare } from 'lucide-react';
 
 interface LayoutProps {
   children: ReactNode;
@@ -15,6 +15,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => 
     { id: 'upload-statement', label: 'Upload Statement', icon: UploadCloud },
     { id: 'disputes', label: 'Disputes', icon: AlertTriangle },
     { id: 'commissions', label: 'Commissions', icon: FileText },
+    { id: 'statement-compare', label: 'Statement Compare', icon: GitCompare },
     { id: 'sync-test', label: 'Sync Test', icon: RefreshCw },
   ];
 
