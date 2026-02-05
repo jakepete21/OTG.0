@@ -283,10 +283,13 @@ Matches carrier statement rows against master data using "OTG Comp Billing item"
 
 **Features**:
 - Exact matching on normalized "OTG Comp Billing item"
+- When multiple Comp Key candidates exist for a billing item, prefers the record that has splits listed (COMP 1–4 with valid role codes) via `hasValidSplits()`
 - Looks up State from Master Data if missing in statement
 - Calculates role splits using percentage map (RD1=20%, RD2=10%, etc.)
 - Handles special roles (RD2-05, RD4-05, RM1-15)
-- HA* roles go to OTG
+- **OTG is always the remainder**: COMP codes starting with "OTG" are skipped in the percentage loop; remainder is forced into OTG so splits sum to commission
+- **Negative commission**: OTG is forced to `commission - sum(other roles)` so OTG is never positive when commission is negative
+- **HA5/HA6**: Share is added to OTG only (not also to HA5/HA6) to avoid double-counting; HA1–HA4 are ignored in the loop
 - Uses cents math to prevent rounding drift
 - Rule: Commission ≤ 3 cents → all goes to OTG
 - Provider override: * account on Zayo → ENA
@@ -331,8 +334,28 @@ Generates seller statements grouped by role groups.
 **Features**:
 - Groups by "OTG Comp Billing item"
 - Aggregates OTG Comp $ (total commission) and Seller Comp $ (role splits)
-- Preserves star accounts (*) separately
+- **OTG safeguard**: For OTG group, when commission is negative and OTG share is positive, recomputes OTG as remainder so stored value is correct
+- **Rounding**: Item amounts are rounded to 2 decimals only when building the final list (not during accumulation), so stored otgComp/sellerComp match CSV display without losing precision in totals
+- Preserves star accounts (*) separately; ENA accounts kept separate by billing item
 - Sorts by Provider → Account Name → Billing Item
+
+### `services/statementComparisonService.ts`
+
+#### `compareStatements(csvStatements, firebaseStatements, processingMonth): Promise<ComparisonResult>`
+Compares uploaded CSV/XLSX seller statements (by role group) against Firebase seller statements.
+
+**Input**: Parsed statements keyed by role group, Firebase seller statements, processing month  
+**Output**: Comparison result with matched items, differences, totals, and summary per role group
+
+**Features**:
+- Totals use `round2` so displayed totals match row-level rounding
+- **10-cent tolerance (UI only)**: Amounts are treated as equal if within $0.10 (`amountsEqual`); total difference is shown as 0 when within tolerance. This avoids flagging small rounding drift; seller statement generation is unchanged.
+- Match key: billing item + account name (normalized)
+
+#### `parseUploadedStatements(file: File): Promise<ParseResult>`
+Parses uploaded XLSX with role-group tabs (RD1/2, RD3/4, etc.); uses Gemini to detect column mappings when needed.
+
+**Used by**: Statement Compare tab
 
 ### `services/carrierStatementPipeline.ts`
 

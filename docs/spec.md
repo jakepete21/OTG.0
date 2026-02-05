@@ -58,6 +58,11 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 - Export/print functionality (PDF export)
 - **Carrier Statement Management**: Delete carrier statements directly from Commissions tab with confirmation
 
+#### 5. Statement Compare
+- Compare uploaded CSV/XLSX seller statements (by role group) against Firebase seller statements for a processing month
+- AI (Gemini) detects column mappings when sheet/column names vary
+- **10-cent tolerance**: In the UI, amounts and total differences within $0.10 are treated as matching to avoid flagging small rounding drift; seller statement generation is unchanged
+
 ### Data Flow
 
 1. **Master Data Setup**: User imports/creates master records with expected services

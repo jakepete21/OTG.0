@@ -18,6 +18,9 @@ const toNum = (v: any): number => {
   return isNaN(n) ? 0 : n;
 };
 
+/** Round to 2 decimals so stored amounts don't drift (e.g. 213.675 → 213.67) */
+const round2 = (x: number): number => Math.round(x * 100) / 100;
+
 /**
  * Aggregates matched rows by OTG Comp Billing item for a specific role group
  */
@@ -103,7 +106,7 @@ const summarizeGroup = (
       buckets.set(key, acc);
     }
 
-    // Accumulate - this should aggregate multiple statement rows with same billing item
+    // Accumulate with full precision (round only on output to avoid losing cents over many rows)
     acc.otgComp += toNum(row.commissionAmount);
     acc.sellerComp += roleSum;
     if (isOTGGroup && billingItem === '525251') {
@@ -125,7 +128,7 @@ const summarizeGroup = (
     if (!acc.vpNotes && row.vpNotes) acc.vpNotes = row.vpNotes;
   });
 
-  // Convert to array and sort
+  // Convert to array, sort, and round each item's amounts to 2 decimals for storage (avoids 213.675-style drift in Firebase without losing precision during accumulation)
   const list = Array.from(buckets.values())
     .sort((a, b) => {
       const pa = (a.provider || '').toLowerCase();
@@ -139,7 +142,12 @@ const summarizeGroup = (
       const sa = (a.otgCompBillingItem || '').toLowerCase();
       const sb = (b.otgCompBillingItem || '').toLowerCase();
       return sa < sb ? -1 : sa > sb ? 1 : 0;
-    });
+    })
+    .map(item => ({
+      ...item,
+      otgComp: round2(item.otgComp),
+      sellerComp: round2(item.sellerComp),
+    }));
 
   // Log top aggregated items (billing items with most rows)
   const topAggregated = Array.from(rowCounts.entries())
@@ -177,9 +185,9 @@ export const generateSellerStatements = (
   STATEMENT_GROUPS.forEach(group => {
     const items = summarizeGroup(matchedRows, group.roles);
 
-    // Calculate totals
-    const totalOtgComp = items.reduce((sum, item) => sum + item.otgComp, 0);
-    const totalSellerComp = items.reduce((sum, item) => sum + item.sellerComp, 0);
+    // Calculate totals (round to 2 decimals for consistent display/storage)
+    const totalOtgComp = round2(items.reduce((sum, item) => sum + item.otgComp, 0));
+    const totalSellerComp = round2(items.reduce((sum, item) => sum + item.sellerComp, 0));
 
     statements.push({
       roleGroup: group.roleGroup,

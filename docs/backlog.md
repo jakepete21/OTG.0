@@ -184,6 +184,19 @@ Acceptance:
 
 ---
 
+#### ✅ Ticket: OTG/Seller Comp Splits and Statement Compare Rounding (COMPLETED 2026-02)
+**Goal**: Fix OTG and seller comp calculation for negative commissions and duplicate Comp Key rows; align Statement Compare UI with small rounding drift.
+
+**Completed**:
+- **matchingService**: OTG is always the remainder (skip OTG codes in percentage loop); negative commission forces OTG = remainder; HA5/HA6 add to OTG only (no double-count); when multiple Comp Key candidates for same billing item, prefer the one with splits listed (`hasValidSplits`).
+- **sellerStatements**: OTG safeguard when commission is negative and OTG share positive (recompute OTG from remainder); round item otgComp/sellerComp to 2 decimals on output only (not during accumulation) so stored values match CSV.
+- **Statement Compare (UI only)**: 10-cent tolerance—amounts and total difference within $0.10 are treated as matching; no change to seller statement generation.
+- Removed debug logs from commissions tab and Statement Compare as requested; 525251 logging retained for Comp Key duplicate debugging.
+
+**Files**: `services/matchingService.ts`, `services/sellerStatements.ts`, `services/statementComparisonService.ts`, `components/Reports.tsx`
+
+---
+
 #### 🔧 Ticket: Fix Zayo Carrier Statement Showing for Wrong Month and Remove Unnecessary Logs
 **Goal**: Fix bug where Zayo carrier statement shows for January when it should only show for February, and remove all unnecessary console logs from Commissions tab
 

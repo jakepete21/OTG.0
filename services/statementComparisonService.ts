@@ -131,12 +131,15 @@ const normalizeNumber = (val: any, originalString?: string): number => {
 /** Round to 2 decimal places for consistent totals and comparison (avoids floating point and tolerance mismatches) */
 const round2 = (x: number): number => Math.round(x * 100) / 100;
 
+/** Statement Compare UI: treat amounts as equal if within this tolerance (avoids flagging rounding drift) */
+const AMOUNT_TOLERANCE = 0.10;
+
 /**
- * Check if two numbers are equal after rounding to 2 decimals.
- * This keeps row-level "differences" in sync with total difference (no hidden rounding).
+ * Check if two amounts are equal for Statement Compare: exact after round2, or within 10 cents.
+ * Used only in Statement Compare UI so small rounding drift is not shown as a difference.
  */
-const numbersEqual = (a: number, b: number): boolean => {
-  return round2(a) === round2(b);
+const amountsEqual = (a: number, b: number): boolean => {
+  return round2(a) === round2(b) || Math.abs(a - b) <= AMOUNT_TOLERANCE;
 };
 
 /**
@@ -749,7 +752,7 @@ const compareItems = (
 ): { field: string; csvValue: any; firebaseValue: any }[] => {
   const differences: { field: string; csvValue: any; firebaseValue: any }[] = [];
 
-  if (!numbersEqual(csv.otgComp, firebase.otgComp)) {
+  if (!amountsEqual(csv.otgComp, firebase.otgComp)) {
     differences.push({
       field: 'otgComp',
       csvValue: csv.otgComp,
@@ -757,7 +760,7 @@ const compareItems = (
     });
   }
 
-  if (!numbersEqual(csv.sellerComp, firebase.sellerComp)) {
+  if (!amountsEqual(csv.sellerComp, firebase.sellerComp)) {
     differences.push({
       field: 'sellerComp',
       csvValue: csv.sellerComp,
@@ -868,9 +871,11 @@ export const compareStatements = async (
       sellerComp: firebaseItems.reduce((sum, item) => sum + round2(item.sellerComp), 0),
     };
 
+    const rawOtgDiff = round2(csvTotal.otgComp - firebaseTotal.otgComp);
+    const rawSellerDiff = round2(csvTotal.sellerComp - firebaseTotal.sellerComp);
     const difference = {
-      otgComp: round2(csvTotal.otgComp - firebaseTotal.otgComp),
-      sellerComp: round2(csvTotal.sellerComp - firebaseTotal.sellerComp),
+      otgComp: Math.abs(rawOtgDiff) <= AMOUNT_TOLERANCE ? 0 : rawOtgDiff,
+      sellerComp: Math.abs(rawSellerDiff) <= AMOUNT_TOLERANCE ? 0 : rawSellerDiff,
     };
 
     roleGroups.push({
@@ -890,6 +895,53 @@ export const compareStatements = async (
     totalDifferences: roleGroups.reduce((sum, rg) => sum + rg.differences.length, 0),
     totalCompared: roleGroups.reduce((sum, rg) => sum + rg.matched.length + rg.differences.length, 0),
   };
+
+  // Log OTG totals and differences per role group to debug rounding
+  console.log('[Statement Compare] OTG totals and differences by role group:');
+  roleGroups.forEach(rg => {
+    const rawCsvOtg = (csvStatements[rg.roleGroup] || []).reduce((s, i) => s + i.otgComp, 0);
+    const rawFbOtg = (firebaseByRoleGroup.get(rg.roleGroup) || []).reduce((s, i) => s + i.otgComp, 0);
+    console.log(`  ${rg.roleGroup}: CSV otgComp=${rg.csvTotal.otgComp} (raw=${rawCsvOtg.toFixed(4)}), Firebase otgComp=${rg.firebaseTotal.otgComp} (raw=${rawFbOtg.toFixed(4)}), difference=${rg.difference.otgComp}`);
+  });
+
+  // Log line-item differences: items that have differing amounts (in differences array)
+  console.log('[Statement Compare] Line items with differing amounts (by role group):');
+  roleGroups.forEach(rg => {
+    if (rg.differences.length === 0) return;
+    console.log(`  --- ${rg.roleGroup} (${rg.differences.length} items with diffs) ---`);
+    rg.differences.forEach((d, i) => {
+      const amountDiffs = d.differences.filter(df => df.field === 'otgComp' || df.field === 'sellerComp');
+      if (amountDiffs.length === 0) return;
+      console.log(`    [${i + 1}] Account=${d.csv.accountName}, BillingItem=${d.csv.otgCompBillingItem}`);
+      amountDiffs.forEach(df => {
+        console.log(`        ${df.field}: CSV=${df.csvValue}, Firebase=${df.firebaseValue}, diff=${typeof df.csvValue === 'number' && typeof df.firebaseValue === 'number' ? (df.csvValue - df.firebaseValue).toFixed(4) : 'n/a'}`);
+      });
+    });
+  });
+
+  // Log matched items where raw otgComp differs by >= 0.005 (contributes to total drift even if rounded equal)
+  const DRIFT_THRESHOLD = 0.005;
+  console.log(`[Statement Compare] Matched items with raw otgComp drift >= ${DRIFT_THRESHOLD} (rounding drift):`);
+  roleGroups.forEach(rg => {
+    const driftItems: { account: string; billingItem: string; csvOtg: number; fbOtg: number; diff: number }[] = [];
+    rg.matched.forEach(({ csv, firebase }) => {
+      const diff = csv.otgComp - firebase.otgComp;
+      if (Math.abs(diff) >= DRIFT_THRESHOLD) {
+        driftItems.push({
+          account: csv.accountName || '',
+          billingItem: csv.otgCompBillingItem || '',
+          csvOtg: csv.otgComp,
+          fbOtg: firebase.otgComp,
+          diff,
+        });
+      }
+    });
+    if (driftItems.length === 0) return;
+    console.log(`  --- ${rg.roleGroup} (${driftItems.length} items with raw drift) ---`);
+    driftItems.forEach((item, i) => {
+      console.log(`    [${i + 1}] Account=${item.account}, BillingItem=${item.billingItem}, CSV otgComp=${item.csvOtg}, Firebase otgComp=${item.fbOtg}, diff=${item.diff.toFixed(4)}`);
+    });
+  });
 
   return {
     processingMonth,
