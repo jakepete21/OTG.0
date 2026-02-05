@@ -125,11 +125,6 @@ const buildCompMap = (masterData: MasterRecord[]): Map<string, {
 
     // Extract COMP 1-4 roles
     const codes: string[] = [];
-    const billingItemForDebug = record['OTG Comp Billing item'] || 
-                                 record['OTG Comp Billing Item'] ||
-                                 record['otgCompBillingItem'] || '';
-    const isDebugBillingItem = String(billingItemForDebug).trim() === '757355';
-    
     for (let i = 1; i <= 4; i++) {
       // Try multiple variations of COMP field names, prioritizing regular COMP fields
       // Check regular COMP fields first
@@ -150,9 +145,6 @@ const buildCompMap = (masterData: MasterRecord[]): Map<string, {
           const compFieldStr = String(compField).trim();
           const compFieldUpper = compFieldStr.toUpperCase();
           codes.push(compFieldUpper);
-          if (isDebugBillingItem) {
-            console.log(`[757355] COMP ${i} extraction - Added COMP 1 to codes: "${compFieldUpper}"`);
-          }
         }
       } else {
         // For COMP 2-4: only use "before 07/2025" variant if regular COMP field is empty or invalid
@@ -174,12 +166,6 @@ const buildCompMap = (masterData: MasterRecord[]): Map<string, {
           codes.push(compFieldUpper);
         }
       }
-    }
-    
-    if (isDebugBillingItem) {
-      console.log(`[757355] Master Data record - Account: ${record.clientName || record['Account **CARRIER**'] || 'N/A'}`);
-      console.log(`[757355] COMP fields - COMP 1: "${record['COMP 1']}", COMP 2: "${record['COMP 2']}", COMP 3: "${record['COMP 3']}", COMP 4: "${record['COMP 4']}"`);
-      console.log(`[757355] Codes extracted:`, codes);
     }
 
     // Get provider and VP notes
@@ -206,9 +192,16 @@ const buildCompMap = (masterData: MasterRecord[]): Map<string, {
   return map;
 };
 
+/** True if this candidate has at least one valid role code (splits listed) */
+const hasValidSplits = (codes: string[]): boolean => {
+  if (!codes || codes.length === 0) return false;
+  return codes.some(c => c && String(c).trim() !== '' && String(c).trim().toUpperCase() !== 'N/A');
+};
+
 /**
  * Finds the best matching Master Data record from a list of candidates
- * Uses account name matching if available
+ * Uses account name matching if available (e.g. ZNS vs non-ZNS by name).
+ * When multiple candidates exist and only some have splits listed, prefer the one with splits.
  */
 const findBestMatch = (
   candidates: Array<{
@@ -227,6 +220,14 @@ const findBestMatch = (
 } | null => {
   if (!candidates || candidates.length === 0) {
     return null;
+  }
+
+  // When multiple candidates and only some have splits, prefer those with splits
+  if (candidates.length > 1) {
+    const withSplits = candidates.filter(c => hasValidSplits(c.codes));
+    if (withSplits.length > 0 && withSplits.length < candidates.length) {
+      candidates = withSplits;
+    }
   }
 
   // If only one candidate, use it
@@ -313,8 +314,6 @@ const calculateRoleSplits = (
   };
 
   const amtCents = toCents(commissionAmount);
-  
-  const isDebug = debugBillingItem === '757355';
 
   // Rule #1: If commission is 3 cents or less, put it ALL in OTG
   if (Math.abs(amtCents) <= 3) {
@@ -332,6 +331,11 @@ const calculateRoleSplits = (
 
     const special = SPECIAL_ROLE_MAP[raw];
     const roleKey = special ? special.base : raw;
+
+    // OTG / OTG.0-ZF etc. must never get a percentage in the loop — OTG is always the remainder (Rule #2)
+    if (/^OTG/i.test(roleKey)) {
+      return;
+    }
 
     const pct = special?.pct ?? ROLE_PERCENTAGE_MAP[raw] ?? ROLE_PERCENTAGE_MAP[roleKey] ?? 0;
     
@@ -352,11 +356,8 @@ const calculateRoleSplits = (
       if (roleKey === 'HA1' || roleKey === 'HA2' || roleKey === 'HA3' || roleKey === 'HA4') {
         return;
       }
-      // HA5, HA6: store and aggregate into OTG seller statement
-      if (roleKey in splits) {
-        const currentCents = toCents(splits[roleKey as keyof RoleSplits] || 0);
-        splits[roleKey as keyof RoleSplits] = centsToNum(currentCents + shareCents);
-      }
+      // HA5, HA6: aggregate into OTG seller statement only. Add share to OTG only (do not also
+      // add to HA5/HA6) so we don't double-count and the remainder step gives correct OTG.
       const currentOtgCents = toCents(splits.OTG || 0);
       splits.OTG = centsToNum(currentOtgCents + shareCents);
       return;
@@ -380,12 +381,21 @@ const calculateRoleSplits = (
     splits.OTG = centsToNum(currentOtgCents + diff);
   }
 
-  // Final check: ensure sum equals commission
+  // Final check: ensure sum equals commission (fix rounding)
   const finalSum = Object.values(splits).reduce((s, v) => s + toCents(v || 0), 0);
   const finalDiff = amtCents - finalSum;
   if (finalDiff !== 0) {
     const currentOtgCents = toCents(splits.OTG || 0);
     splits.OTG = centsToNum(currentOtgCents + finalDiff);
+  }
+
+  // Safeguard: for negative commission, OTG must be the remainder (never positive, never 10% of |amount|)
+  if (amtCents < 0) {
+    const otherRolesCents = Object.entries(splits).reduce((s, [k, v]) =>
+      k === 'OTG' ? s : s + toCents(v || 0), 0
+    );
+    const otgShouldBeCents = amtCents - otherRolesCents;
+    splits.OTG = centsToNum(otgShouldBeCents);
   }
 
   return splits;
@@ -442,14 +452,6 @@ export const matchCarrierStatements = (
 
     const key = normalizeKey(billingItem);
     const candidates = compMap.get(key);
-    
-    // Debug logging for billing item "757355"
-    if (billingItem === '757355' || key === normalizeKey('757355')) {
-      console.log(`[757355] Statement row - Account: ${row.accountName}, Commission: $${row.commissionAmount}`);
-      if (candidates && candidates.length > 0) {
-        console.log(`[757355] Found ${candidates.length} Master Data candidates`);
-      }
-    }
 
     if (!candidates || !Array.isArray(candidates) || candidates.length === 0) {
       // No match found - will be handled by dispute detection
@@ -466,11 +468,18 @@ export const matchCarrierStatements = (
       return;
     }
 
-    // Debug logging for billing item "757355" - show selected match
-    if (billingItem === '757355' || key === normalizeKey('757355')) {
-      console.log(`[757355] Selected Master Data - Account: ${matchData.masterRecord.clientName || matchData.masterRecord['Account **CARRIER**']}`);
-      console.log(`[757355] Selected COMP 1: "${matchData.masterRecord['COMP 1']}", before 07/2025 COMP 1: "${matchData.masterRecord['before 07/2025 COMP 1']}"`);
-      console.log(`[757355] Selected Codes:`, matchData.codes);
+    if (billingItem === '525251') {
+      const masterAccount = matchData.masterRecord.clientName || matchData.masterRecord['Account **CARRIER**'] || '';
+      console.log('[525251] Using Comp Key record:', {
+        accountName: masterAccount,
+        codes: matchData.codes,
+        hasSplits: hasValidSplits(matchData.codes),
+        candidateCount: candidates.length,
+        candidatesWithSplits: candidates.filter(c => hasValidSplits(c.codes)).map(c => ({
+          accountName: c.accountName,
+          codes: c.codes,
+        })),
+      });
     }
 
     // Check if codes array is valid (allow empty codes - they'll just result in all OTG)
@@ -496,12 +505,6 @@ export const matchCarrierStatements = (
     }
 
     const roleSplits = calculateRoleSplits(row.commissionAmount, matchData.codes, billingItem);
-    
-    // Debug logging for billing item "757355" - show role splits
-    if (row.otgCompBillingItem === '757355' || String(row.otgCompBillingItem).trim() === '757355') {
-      console.log(`[757355] Role splits - RD1: $${roleSplits.RD1 || 0}, RD2: $${roleSplits.RD2 || 0}, OVR: $${roleSplits.OVR || 0}, OTG: $${roleSplits.OTG || 0}`);
-      console.log(`[757355] Will appear in RD1/2 seller statement: ${(roleSplits.RD1 || 0) + (roleSplits.RD2 || 0) > 0}`);
-    }
 
     // Get expected comp percent from master record
     const expectedCompPercent = matchData.masterRecord['EXPECTED/Mo. OTG Comp %'] ||

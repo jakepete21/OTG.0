@@ -409,10 +409,6 @@ const mapCsvRowToItem = (
     sellerComp = -sellerComp;
   }
   
-  // Log normalized values for debugging
-  if (otgCompBillingItem === '860324' || otgCompBillingItem === '643164' || otgCompBillingItem === '23563802') {
-    console.log(`  Final OTG Comp:`, otgComp, `Final Seller Comp:`, sellerComp);
-  }
   const provider = providerIdx >= 0 ? String(row[headers[providerIdx]] || '').trim() : '';
   
   // Skip rows missing essential fields
@@ -876,20 +872,6 @@ export const compareStatements = async (
       otgComp: round2(csvTotal.otgComp - firebaseTotal.otgComp),
       sellerComp: round2(csvTotal.sellerComp - firebaseTotal.sellerComp),
     };
-
-    // RM1/2 only: log every line item and totals from XLSX and from Firebase
-    if (roleGroup === 'RM1/2') {
-      console.log('[RM1/2 XLSX] Line items:', csvItems.length);
-      csvItems.forEach((item, i) => {
-        console.log(`  [${i + 1}] BillingItem=${item.otgCompBillingItem}, Account=${item.accountName}, otgComp=${item.otgComp}, sellerComp=${item.sellerComp}`);
-      });
-      console.log('[RM1/2 XLSX] Totals: otgComp=', csvTotal.otgComp, ', sellerComp=', csvTotal.sellerComp);
-      console.log('[RM1/2 Firebase] Line items:', firebaseItems.length);
-      firebaseItems.forEach((item, i) => {
-        console.log(`  [${i + 1}] BillingItem=${item.otgCompBillingItem}, Account=${item.accountName}, otgComp=${item.otgComp}, sellerComp=${item.sellerComp}`);
-      });
-      console.log('[RM1/2 Firebase] Totals: otgComp=', firebaseTotal.otgComp, ', sellerComp=', firebaseTotal.sellerComp);
-    }
 
     roleGroups.push({
       roleGroup,

@@ -265,9 +265,7 @@ const MonthSection: React.FC<MonthSectionProps> = ({
       const docIds = sellerStatementsForMonth.map(s => s.id);
       const uniqueDocIds = new Set(docIds);
       if (docIds.length !== uniqueDocIds.size) {
-        console.warn(`[Reports] ⚠️ DUPLICATE DOCUMENT IDs detected in sellerStatementsForMonth: ${docIds.length} docs, ${uniqueDocIds.size} unique`);
-        const duplicates = docIds.filter((id, idx) => docIds.indexOf(id) !== idx);
-        console.warn(`[Reports] Duplicate IDs:`, duplicates);
+        // Duplicate document IDs detected; deduplication handled below by roleGroup merge
       }
       
       // Check for duplicate roleGroups
@@ -276,11 +274,7 @@ const MonthSection: React.FC<MonthSectionProps> = ({
       roleGroups.forEach(rg => roleGroupCounts.set(rg, (roleGroupCounts.get(rg) || 0) + 1));
       const duplicateRoleGroups = Array.from(roleGroupCounts.entries()).filter(([_, count]) => count > 1);
       if (duplicateRoleGroups.length > 0) {
-        console.warn(`[Reports] ⚠️ DUPLICATE ROLE GROUPS detected in Firebase:`, duplicateRoleGroups);
-        duplicateRoleGroups.forEach(([rg, count]) => {
-          const docs = sellerStatementsForMonth.filter(s => s.roleGroup === rg);
-          console.warn(`[Reports] RoleGroup ${rg} appears ${count} times with IDs:`, docs.map(d => d.id));
-        });
+        // Merged below by key to prevent double-counting
       }
       
       statements = sellerStatementsForMonth.map(stmt => ({
@@ -306,8 +300,6 @@ const MonthSection: React.FC<MonthSectionProps> = ({
     statements.forEach((stmt) => {
       const existing = deduplicated.get(stmt.roleGroup);
       if (existing) {
-        console.warn(`[Reports] ⚠️ Duplicate roleGroup ${stmt.roleGroup} detected - merging items by key to prevent double-counting`);
-        
         // Create a map of existing items by key (billingItem|accountName)
         const existingItemsMap = new Map<string, any>();
         existing.items.forEach((item: any) => {
@@ -326,11 +318,6 @@ const MonthSection: React.FC<MonthSectionProps> = ({
             const otgMatch = Math.abs((existingItem.otgComp || 0) - (newItem.otgComp || 0)) < 0.01;
             const sellerMatch = Math.abs((existingItem.sellerComp || 0) - (newItem.sellerComp || 0)) < 0.01;
             
-            if (!otgMatch || !sellerMatch) {
-              console.warn(`[Reports] ⚠️ Duplicate item "${key}" has different values - using existing values to prevent double-counting`);
-              console.warn(`[Reports]   Existing: OTG=$${(existingItem.otgComp || 0).toFixed(2)}, Seller=$${(existingItem.sellerComp || 0).toFixed(2)}`);
-              console.warn(`[Reports]   New: OTG=$${(newItem.otgComp || 0).toFixed(2)}, Seller=$${(newItem.sellerComp || 0).toFixed(2)}`);
-            }
             // Don't add duplicate item - keep existing one
           } else {
             // New item - add it

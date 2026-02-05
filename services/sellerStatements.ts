@@ -27,7 +27,7 @@ const summarizeGroup = (
 ): SellerStatementItem[] => {
   const buckets = new Map<string, SellerStatementItem>();
   const rowCounts = new Map<string, number>(); // Track how many rows aggregate into each bucket
-  
+
   // Track statistics for this group
   let rowsIncluded = 0;
   let rowsExcluded = 0;
@@ -49,10 +49,29 @@ const summarizeGroup = (
         anyRoleNonZero = true;
       }
     });
-    
-    // Debug logging for billing item "757355"
-    if (billingItem === '757355') {
-      console.log(`[757355] In ${groupRoles.join('/')} group - Commission: $${row.commissionAmount}, RD1: $${row.roleSplits.RD1 || 0}, RD2: $${row.roleSplits.RD2 || 0}, OVR: $${row.roleSplits.OVR || 0}, OTG: $${row.roleSplits.OTG || 0}`);
+
+    // OTG group only: never use a positive OTG when commission is negative (OTG must be the remainder)
+    const isOTGGroup = groupRoles.length === 1 && groupRoles[0] === 'OTG';
+    const roleSumBeforeSafeguard = isOTGGroup && billingItem === '525251' ? roleSum : undefined;
+    let safeguardApplied = false;
+    if (isOTGGroup && toNum(row.commissionAmount) < 0 && roleSum > 0) {
+      const otherRolesCents = Object.entries(row.roleSplits || {}).reduce((s, [k, v]) =>
+        k === 'OTG' ? s : s + Math.round(toNum(v) * 100), 0
+      );
+      const commissionCents = Math.round(toNum(row.commissionAmount) * 100);
+      const otgCents = commissionCents - otherRolesCents;
+      roleSum = otgCents / 100;
+      safeguardApplied = true;
+    }
+    if (isOTGGroup && billingItem === '525251') {
+      console.log('[525251 OTG seller statement] Row:', {
+        accountName: row.accountName,
+        commissionAmount: row.commissionAmount,
+        roleSplits: { ...row.roleSplits },
+        roleSumFromSplits: roleSumBeforeSafeguard,
+        safeguardApplied,
+        roleSumUsed: roleSum,
+      });
     }
 
     // Only include rows that actually contribute to this statement group
@@ -87,6 +106,14 @@ const summarizeGroup = (
     // Accumulate - this should aggregate multiple statement rows with same billing item
     acc.otgComp += toNum(row.commissionAmount);
     acc.sellerComp += roleSum;
+    if (isOTGGroup && billingItem === '525251') {
+      console.log('[525251 OTG seller statement] After adding to bucket:', {
+        bucketKey: key,
+        accountName: acc.accountName,
+        otgCompNow: acc.otgComp,
+        sellerCompNow: acc.sellerComp,
+      });
+    }
     
     // Track row count for this bucket
     rowCounts.set(key, (rowCounts.get(key) || 0) + 1);
@@ -162,44 +189,16 @@ export const generateSellerStatements = (
     });
   });
 
-  // Verify totals
-  // NOTE: totalOtgCompAcrossAllGroups will be inflated because the same billing item
-  // appears in multiple role groups (each group shows the full commission for items
-  // that contribute to that group). This is expected behavior.
-  // Instead, we verify that totalSellerCompAcrossAllGroups equals the total commission,
-  // since role splits should sum to 100% of the commission.
-  const totalOtgCompAcrossAllGroups = statements.reduce((sum, s) => sum + s.totalOtgComp, 0);
-  const totalSellerCompAcrossAllGroups = statements.reduce((sum, s) => sum + s.totalSellerComp, 0);
-  const totalCommissionFromRows = matchedRows.reduce((sum, r) => sum + (r.commissionAmount || 0), 0);
-  const totalRoleSplitsFromRows = matchedRows.reduce((sum, r) => {
-    const roleSum = Object.values(r.roleSplits || {}).reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0);
-    return sum + roleSum;
-  }, 0);
-  
-  // Log totals for debugging
-  console.log(`[generateSellerStatements] Totals verification:`);
-  console.log(`  - Total commission from matched rows: $${totalCommissionFromRows.toFixed(2)}`);
-  console.log(`  - Total role splits from matched rows: $${totalRoleSplitsFromRows.toFixed(2)}`);
-  console.log(`  - Total seller comp across all groups: $${totalSellerCompAcrossAllGroups.toFixed(2)}`);
-  console.log(`  - Total OTG comp across all groups: $${totalOtgCompAcrossAllGroups.toFixed(2)}`);
-  console.log(`  - Statements breakdown:`, statements.map(s => ({
-    roleGroup: s.roleGroup,
-    itemsCount: s.items.length,
-    totalOtgComp: s.totalOtgComp.toFixed(2),
-    totalSellerComp: s.totalSellerComp.toFixed(2),
-    // Verify totals match sum of items
-    itemsSumOtgComp: s.items.reduce((sum, item) => sum + item.otgComp, 0).toFixed(2),
-    itemsSumSellerComp: s.items.reduce((sum, item) => sum + item.sellerComp, 0).toFixed(2),
-  })));
-  
-  // Debug logging for billing item "757355" - check if it appears in RD1/2 statement
-  const rd12Statement = statements.find(s => s.roleGroup === 'RD1/2');
-  if (rd12Statement) {
-    const item757355 = rd12Statement.items.find(item => item.otgCompBillingItem === '757355');
-    if (item757355) {
-      console.log(`[757355] Found in RD1/2 seller statement - Seller Comp: $${item757355.sellerComp.toFixed(2)}, OTG Comp: $${item757355.otgComp.toFixed(2)}`);
-    } else {
-      console.log(`[757355] NOT found in RD1/2 seller statement. Checked ${rd12Statement.items.length} items.`);
+  // 525251 OTG only: log final OTG statement item for 525251
+  const otgStatement = statements.find(s => s.roleGroup === 'OTG');
+  if (otgStatement) {
+    const item525251 = otgStatement.items.find(item => item.otgCompBillingItem === '525251');
+    if (item525251) {
+      console.log('[525251 OTG seller statement] Final item in OTG statement:', {
+        accountName: item525251.accountName,
+        otgComp: item525251.otgComp,
+        sellerComp: item525251.sellerComp,
+      });
     }
   }
 
