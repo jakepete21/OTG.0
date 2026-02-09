@@ -194,6 +194,17 @@ Commission Amount: "$200.00"
   - **Changed Rates**: Uses -2 month offset for comparison
   - **New Accounts**: Can fallback to statement file for State lookup
 
+## Deposit Total and Unmatched Rows (App)
+
+The app extractor aligns **extracted rows** with the **Deposit Total** so the Commissions "Differences" report can list every line that is not in the comp key:
+
+- **Only rows with "Pay This Reporting Period" = "Yes"** are extracted (same set used for the raw total).
+- Rows are **not skipped** for missing Customer Account, Billing Account Number, or Svc Name. Placeholders are used: `(No account)` and `(No billing item)` (or Bill Description when present) so every such line becomes a `CarrierStatementRow`.
+- **Raw total** = sum of `commissionAmount` over these extracted rows (no separate second loop).
+- Unmatched lines (no comp key match) are stored on the carrier statement as `unmatchedRows` and shown in the Differences report table.
+
+Re-upload or "Regenerate seller statements" after changing this logic so existing months get the full list of unmatched line items.
+
 ## Special Considerations
 
 ### Month Offset Logic

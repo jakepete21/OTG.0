@@ -30,6 +30,7 @@ import {
 import type {
   CarrierStatementDoc,
   SellerStatementDoc,
+  MatchDoc,
 } from './firebaseQueries';
 import { getMasterData2 } from './firebaseQueries';
 
@@ -192,6 +193,50 @@ export const useSellerStatements = (
   }, [processingMonth]);
 
   return statements;
+};
+
+/**
+ * Hook to get all matches for a processing month (for difference report: unmatched vs matched totals)
+ */
+export const useMatchesForProcessingMonth = (
+  processingMonth: string | null
+): MatchDoc[] => {
+  const [matches, setMatches] = useState<MatchDoc[]>([]);
+
+  useEffect(() => {
+    if (!processingMonth) {
+      setMatches([]);
+      return;
+    }
+
+    const matchesRef = collection(db, 'matches');
+    const q = query(
+      matchesRef,
+      where('processingMonth', '==', processingMonth)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const docs = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as MatchDoc[];
+        setMatches(docs);
+      },
+      (error) => {
+        if (error.code === 'failed-precondition') {
+          console.warn('[useMatchesForProcessingMonth] Index may be building:', error.message);
+        } else {
+          console.error('[useMatchesForProcessingMonth] Error:', error);
+        }
+      }
+    );
+
+    return () => unsubscribe();
+  }, [processingMonth]);
+
+  return matches;
 };
 
 /**

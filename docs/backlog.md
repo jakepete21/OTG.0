@@ -50,7 +50,57 @@ Acceptance:
 
 ### 🔄 In Progress
 
+### ✅ Completed (features branch)
+- Fix TypeScript Errors and Add Deposit Totals to Commissions Month Cards (2026-02-05)
+- Seller statement filters and sort (2026-02-05): Column filters (text + Google Sheets-style dropdown with search, Select all/Deselect all, checkboxes); sortable columns (click header, asc/desc); filter dropdown in portal so it stays visible when table is empty; empty state "No rows match" with min-height.
+- Tab persistence on reload (2026-02-05): Active tab (Comp Key, Commissions, etc.) stored in URL hash; reload keeps same tab; back/forward supported.
+- Differences report (2026-02-05): At top of each month's seller statement UI, report why Deposit Total ≠ Commissionable to OTG (unmatched $ from lines not in comp key; rounding/split $). Show actual unmatched line items in a table (State, Account Name, OTG Comp Billing Item, Commission $). Unmatched rows stored on carrier statement and returned from matching pipeline.
+- Zayo extract all Pay This Reporting Period = Yes rows (2026-02-05): Extract every row that counts toward deposit total; use placeholders for missing account/billing item so all lines appear in extraction and unmatched report; raw total = sum of extracted rows.
+
 ### 📋 Backlog
+
+#### 🔧 Ticket: Fix TypeScript Errors and Add Deposit Totals to Commissions Month Cards
+**Goal**: Fix two TypeScript errors in firebaseMutations.ts (ArrayBuffer/Uint8Array) and add a "Deposit Totals" section to each month card on the Commissions tab showing the sum of OTG Comp $ per carrier statement
+
+**Part 1 – TypeScript errors**
+
+**Error 1** (firebaseMutations.ts ~line 807):
+- `Type 'ArrayBuffer' is missing the following properties from type 'Uint8Array<ArrayBufferLike>'`
+- `fileBytes = await getBytes(storageRef)` – `getBytes()` returns `Promise<ArrayBuffer>`, but `fileBytes` is declared as `Uint8Array`
+- **Fix**: Use `ArrayBuffer` for the result of `getBytes`, or assign `new Uint8Array(await getBytes(storageRef))`. Prefer using `ArrayBuffer` and then pass it to `Blob` so types align.
+
+**Error 2** (firebaseMutations.ts ~line 826):
+- `Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'BlobPart'`
+- `new Blob([fileBytes])` – `Uint8Array` with `ArrayBufferLike` is not accepted as `BlobPart` in strict typing
+- **Fix**: If keeping `fileBytes` as `ArrayBuffer`, use `new Blob([fileBytes])`. If keeping as `Uint8Array`, use `new Blob([fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength])` or ensure the type is a valid `BlobPart` (e.g. `ArrayBuffer`).
+
+**Recommended approach**: Declare the variable as `ArrayBuffer`, assign `await getBytes(storageRef)`, and use `new Blob([fileBytes])` and `new File([blob], ...)`. No Uint8Array needed.
+
+**Part 2 – Deposit Totals feature**
+
+**Requirement**: On each month card (e.g. "February 2026") on the Commissions tab, add a **Deposit Totals** section that shows the sum of **OTG Comp $** for each carrier statement separately.
+
+- **OTG Comp $** = total commission from that carrier’s statement (sum of `commissionAmount` from matches for that carrier statement).
+- One total per carrier (GoTo, Lumen, MetTel, TBO, Zayo, Allstream) that has an uploaded statement for that month.
+- Display format: e.g. "GoTo: $X,XXX.XX", "Lumen: $X,XXX.XX", etc., or a small table/list under "Deposit Totals".
+
+**Data source**: Matches in Firestore. For the processing month, for each carrier statement ID in `monthData.carriers`, sum `matchedRow.commissionAmount` (or equivalent) for all matches where `carrierStatementId` equals that statement ID. Use existing `getMatchesForProcessingMonth(processingMonth)` (or per-statement if preferred), then aggregate by `carrierStatementId`. Map `carrierStatementId` back to carrier name using `monthData.carriers` (carrier → statementId; build statementId → carrier for lookup).
+
+**UI placement**: In `components/Reports.tsx`, inside the month card (same area as "Carrier Status"), add a "Deposit Totals" block. Can sit below Carrier Status, same always-visible header area. Use existing `formatCurrency` and carrier labels (e.g. CARRIER_LABELS).
+
+**Files to update**:
+- `services/firebaseMutations.ts`: Fix types for `fileBytes` and `Blob`/`File` construction (lines ~800–827).
+- `components/Reports.tsx`: Add Deposit Totals section to month card; optionally add a helper/hook that fetches matches for the month and returns `Record<carrier, totalOtgComp>` (or use existing `getMatchesForProcessingMonth` and aggregate in the component).
+- Optionally `services/firebaseQueries.ts` or `services/firebaseHooks.ts`: Add `getDepositTotalsByCarrier(processingMonth)` or `useDepositTotals(processingMonth)` that returns `{ [carrier: string]: number }` for the month.
+
+**Acceptance criteria**:
+- [x] TypeScript errors 2740 and 2322 in firebaseMutations.ts are resolved; project builds with no type errors.
+- [x] Each Commissions month card shows a "Deposit Totals" section.
+- [x] For each carrier with an uploaded statement for that month, the section shows the sum of OTG Comp $ (commission) for that carrier’s statement.
+- [x] Totals are formatted as currency and carrier names use the same labels as elsewhere (e.g. GoTo, Lumen, MetTel, TBO, Zayo, Allstream).
+- [x] If a month has no carrier statements or no matches, Deposit Totals shows empty or $0.00 per carrier as appropriate.
+
+---
 
 #### ✅ Ticket: Investigate and Fix Doubled Firebase Values in Statement Compare (RD1/2) (COMPLETED 2026-02-04)
 **Goal**: Investigate why Firebase seller statement values are exactly double the CSV values in Statement Compare, specifically for RD1/2, and fix the root cause

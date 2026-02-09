@@ -124,13 +124,19 @@ export interface SellerStatementItem {
   otgComp: number; // Commission Amount
   sellerComp: number; // Role split amount
   provider: string;
+  /** One-word carrier statement source: GoTo, Lumen, MetTel, TBO, Zayo, Allstream */
+  carrier?: string;
   vpNotes?: string;
 }
 
 export interface CarrierStatementProcessingResult {
   carrierStatementRows: CarrierStatementRow[];
   matchedRows: MatchedRow[];
+  /** Carrier statement lines that could not be matched to comp key (for differences report) */
+  unmatchedRows: CarrierStatementRow[];
   disputes: Dispute[];
   sellerStatements: SellerStatement[];
   summary: string;
+  /** Sum of commission column from every line of the statement (Zayo only for now). Use for Deposit Total. */
+  rawTotalCommissionAmount?: number;
 }

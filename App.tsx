@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import './services/firebaseClient'; // Initialize Firebase
 import Layout from './components/Layout';
 import MasterDataList2 from './components/MasterDataList2';
@@ -10,8 +10,15 @@ import SyncTest from './components/SyncTest';
 import { AnalysisResult, CarrierStatementProcessingResult, MasterRecord } from './types';
 import { useMasterData2, useSaveMasterData2 } from './services/firebaseHooks';
 
+const VALID_TABS = ['comp-key', 'upload-statement', 'disputes', 'commissions', 'statement-compare', 'sync-test'] as const;
+
+function getTabFromHash(): string {
+  const hash = window.location.hash.slice(1).toLowerCase();
+  return VALID_TABS.includes(hash as any) ? hash : 'comp-key';
+}
+
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('comp-key');
+  const [activeTab, setActiveTab] = useState(() => getTabFromHash());
   // Comp Key (formerly Master Data 2) loaded from Firebase (real-time updates) - used by Dashboard
   const masterData2 = useMasterData2();
   const saveMasterData2 = useSaveMasterData2();
@@ -39,6 +46,18 @@ const App: React.FC = () => {
       !key.startsWith('_')
     );
   }, [masterData2]);
+
+  // Keep URL hash in sync with active tab (so reload restores the same page)
+  useEffect(() => {
+    window.location.hash = activeTab;
+  }, [activeTab]);
+
+  // Handle browser back/forward
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(getTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   const renderContent = () => {
     switch (activeTab) {

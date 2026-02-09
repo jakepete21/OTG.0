@@ -101,6 +101,7 @@ const summarizeGroup = (
         otgComp: 0,     // Total Commission Amount
         sellerComp: 0,  // Sum of roles for group
         provider: row.provider || '',
+        carrier: row.carrierStatement || '',
         vpNotes: row.vpNotes || '',
       };
       buckets.set(key, acc);
@@ -125,20 +126,21 @@ const summarizeGroup = (
     if (!acc.state && row.state) acc.state = row.state;
     if (!acc.accountName && row.accountName) acc.accountName = row.accountName;
     if (!acc.provider && row.provider) acc.provider = row.provider;
+    if (!acc.carrier && row.carrierStatement) acc.carrier = row.carrierStatement;
     if (!acc.vpNotes && row.vpNotes) acc.vpNotes = row.vpNotes;
   });
 
-  // Convert to array, sort, and round each item's amounts to 2 decimals for storage (avoids 213.675-style drift in Firebase without losing precision during accumulation)
+  // Convert to array, sort by carrier then account name (alphabetically), and round each item's amounts to 2 decimals for storage
   const list = Array.from(buckets.values())
     .sort((a, b) => {
-      const pa = (a.provider || '').toLowerCase();
-      const pb = (b.provider || '').toLowerCase();
-      if (pa !== pb) return pa < pb ? -1 : 1;
-      
+      const ca = (a.carrier || '').toLowerCase();
+      const cb = (b.carrier || '').toLowerCase();
+      if (ca !== cb) return ca < cb ? -1 : 1;
+
       const aa = (a.accountName || '').toLowerCase();
       const ab = (b.accountName || '').toLowerCase();
       if (aa !== ab) return aa < ab ? -1 : 1;
-      
+
       const sa = (a.otgCompBillingItem || '').toLowerCase();
       const sb = (b.otgCompBillingItem || '').toLowerCase();
       return sa < sb ? -1 : sa > sb ? 1 : 0;

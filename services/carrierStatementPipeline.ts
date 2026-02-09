@@ -17,15 +17,20 @@ export const processCarrierStatement = async (
   console.log(`Master data records: ${masterData.length}`);
   
   // Step 1: Extract data from carrier statement (pass masterData for state lookup)
-  const carrierStatementRows = await extractCarrierStatementData(file, masterData);
+  const extractResult = await extractCarrierStatementData(file, masterData);
+  const carrierStatementRows = extractResult.rows;
+  const rawTotalCommissionAmount = extractResult.rawTotalCommissionAmount;
   console.log(`Extracted ${carrierStatementRows.length} carrier statement rows`);
+  if (rawTotalCommissionAmount != null) {
+    console.log(`Raw total commission (all lines): ${rawTotalCommissionAmount}`);
+  }
   
   if (carrierStatementRows.length === 0) {
     console.error('No rows extracted! Check console for extraction errors.');
   }
 
   // Step 2: Match against master data
-  const matchedRows = matchCarrierStatements(carrierStatementRows, masterData);
+  const { matchedRows, unmatchedRows } = matchCarrierStatements(carrierStatementRows, masterData);
 
   // Step 3: Detect disputes
   const disputes = detectAllDisputes(
@@ -46,13 +51,16 @@ export const processCarrierStatement = async (
     sellerStatements
   );
 
-  return {
+  const result: CarrierStatementProcessingResult = {
     carrierStatementRows,
     matchedRows,
+    unmatchedRows,
     disputes,
     sellerStatements,
     summary,
+    rawTotalCommissionAmount,
   };
+  return result;
 };
 
 /**

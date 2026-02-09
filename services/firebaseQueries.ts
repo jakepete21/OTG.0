@@ -14,6 +14,17 @@ import {
 import { ref, getDownloadURL } from 'firebase/storage';
 import { db, storage } from './firebaseClient';
 
+/** Minimal shape for an unmatched line (stored on carrier statement for differences report) */
+export interface UnmatchedRowDoc {
+  accountName: string;
+  otgCompBillingItem: string;
+  commissionAmount: number;
+  state?: string;
+  accountNumber?: string;
+  provider?: string;
+  invoiceTotal?: number;
+}
+
 /**
  * Carrier Statement document structure
  */
@@ -25,6 +36,10 @@ export interface CarrierStatementDoc {
   processingMonth: string; // "YYYY-MM"
   fileUrl: string;
   uploadedAt: Timestamp | Date;
+  /** Sum of commissionAmount from every line item of the carrier statement (Deposit Total) */
+  totalCommissionAmount?: number;
+  /** Line items on the carrier statement that could not be matched to comp key */
+  unmatchedRows?: UnmatchedRowDoc[];
 }
 
 /**

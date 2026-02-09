@@ -5,6 +5,7 @@ import { processCarrierStatement } from '../services/carrierStatementPipeline';
 import { detectCarrier } from '../services/carrierStatementProcessor';
 import { detectCarrierAndMonth, getMonthKey } from '../services/monthDetection';
 import { useUploadCarrierStatement, useStoreMatches, useRegenerateSellerStatements } from '../services/firebaseHooks';
+import { updateCarrierStatementTotalCommissionAmount, updateCarrierStatementUnmatchedRows } from '../services/firebaseMutations';
 import { generateSellerStatements } from '../services/sellerStatements';
 import FilePreviewModalWrapper from './FilePreviewModalWrapper';
 import { UploadCloud, FileText, AlertTriangle, CheckCircle, Loader2, DollarSign, XCircle, FileJson, Calendar, Eye, X, CheckCircle2 } from 'lucide-react';
@@ -293,6 +294,12 @@ const Dashboard: React.FC<DashboardProps> = ({
           }
         );
         setStoreProgress(null);
+        const totalCommissionAmount = result.rawTotalCommissionAmount ?? result.carrierStatementRows.reduce(
+          (sum, r) => sum + (Number(r.commissionAmount) || 0),
+          0
+        );
+        await updateCarrierStatementTotalCommissionAmount(uploadStatementResult.statementId, totalCommissionAmount);
+        await updateCarrierStatementUnmatchedRows(uploadStatementResult.statementId, result.unmatchedRows ?? []);
         
         // Note: Seller statement regeneration happens after ALL files in batch are processed
         // This ensures all carriers are combined. See processBatchFiles for the regeneration call.
@@ -415,6 +422,12 @@ const Dashboard: React.FC<DashboardProps> = ({
               }
             );
             setStoreProgress(null);
+            const totalCommissionAmount = result.rawTotalCommissionAmount ?? result.carrierStatementRows.reduce(
+              (sum, r) => sum + (Number(r.commissionAmount) || 0),
+              0
+            );
+            await updateCarrierStatementTotalCommissionAmount(uploadResult.statementId, totalCommissionAmount);
+            await updateCarrierStatementUnmatchedRows(uploadResult.statementId, result.unmatchedRows ?? []);
             
             // Regenerate seller statements from ALL matches for this processing month
             setRegenerateProgress('Regenerating seller statements...');

@@ -255,6 +255,50 @@ export async function uploadCarrierStatement(
 }
 
 /**
+ * Update the total commission amount (sum of commissionAmount from every line) on a carrier statement.
+ * Used for Deposit Totals display.
+ */
+export async function updateCarrierStatementTotalCommissionAmount(
+  statementId: string,
+  totalCommissionAmount: number
+): Promise<void> {
+  const statementRef = doc(db, 'carrierStatements', statementId);
+  await setDoc(statementRef, { totalCommissionAmount }, { merge: true });
+}
+
+/** Minimal shape for storing unmatched rows on carrier statement (for differences report) */
+interface UnmatchedRowDoc {
+  accountName: string;
+  otgCompBillingItem: string;
+  commissionAmount: number;
+  state?: string;
+  accountNumber?: string;
+  provider?: string;
+  invoiceTotal?: number;
+}
+
+/**
+ * Update the list of unmatched line items (carrier rows not in comp key) on a carrier statement.
+ * Used by the Differences report to show actual line items.
+ */
+export async function updateCarrierStatementUnmatchedRows(
+  statementId: string,
+  unmatchedRows: CarrierStatementRow[]
+): Promise<void> {
+  const docs: UnmatchedRowDoc[] = unmatchedRows.map((r) => ({
+    accountName: r.accountName ?? '',
+    otgCompBillingItem: r.otgCompBillingItem ?? '',
+    commissionAmount: Number(r.commissionAmount) || 0,
+    state: r.state,
+    accountNumber: r.accountNumber,
+    provider: r.provider,
+    invoiceTotal: r.invoiceTotal != null ? Number(r.invoiceTotal) : undefined,
+  }));
+  const statementRef = doc(db, 'carrierStatements', statementId);
+  await setDoc(statementRef, { unmatchedRows: docs }, { merge: true });
+}
+
+/**
  * Store matches in batches
  * Client processes matches client-side, then stores them here
  * Automatically splits into smaller batches if needed (Firestore limit: 500 operations per batch)
@@ -796,8 +840,8 @@ export async function regenerateSellerStatements(
     try {
       // Download file from Firebase Storage
       // Try using getBytes() first (requires CORS configuration)
-      // If that fails, fall back to using the stored download URL
-      let fileBytes: Uint8Array;
+      // getBytes() returns ArrayBuffer; use it directly for Blob/File (ArrayBuffer is valid BlobPart)
+      let fileBytes: ArrayBuffer;
       
       try {
         // Reconstruct storage path: carrier-statements/{processingMonth}/{carrier}/{filename}
@@ -805,7 +849,7 @@ export async function regenerateSellerStatements(
         console.log(`[regenerateSellerStatements] Attempting to download file from storage path: ${storagePath}`);
         const storageRef = ref(storage, storagePath);
         fileBytes = await getBytes(storageRef);
-        console.log(`[regenerateSellerStatements] Successfully downloaded ${fileBytes.length} bytes for ${carrierStatement.carrier}`);
+        console.log(`[regenerateSellerStatements] Successfully downloaded ${fileBytes.byteLength} bytes for ${carrierStatement.carrier}`);
       } catch (corsError: any) {
         // If getBytes() fails due to CORS, provide helpful error message
         const errorMessage = corsError.message || String(corsError);
@@ -822,9 +866,11 @@ export async function regenerateSellerStatements(
         throw corsError;
       }
       
-      // Convert bytes to File object
+      // Convert ArrayBuffer to File object (ArrayBuffer is valid BlobPart)
       const blob = new Blob([fileBytes]);
-      const file = new File([blob], carrierStatement.filename, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const file = new File([blob], carrierStatement.filename, {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
       
       // Re-extract and re-match
       console.log(`[regenerateSellerStatements] Processing file ${carrierStatement.filename} with master data (${masterDataToUse.length} records)`);
@@ -836,6 +882,15 @@ export async function regenerateSellerStatements(
       // Store new matches
       console.log(`[regenerateSellerStatements] Storing ${result.matchedRows.length} matches for ${carrierStatement.carrier}`);
       await storeMatches(processingMonth, carrierStatement.id, result.matchedRows);
+
+      // Update carrier statement with total commission from every line (for Deposit Totals)
+      // Use raw total when available (Zayo: sum of Commission Amount (USD) for every row), else sum extracted rows
+      const totalCommissionAmount = result.rawTotalCommissionAmount ?? result.carrierStatementRows.reduce(
+        (sum, r) => sum + (Number(r.commissionAmount) || 0),
+        0
+      );
+      await updateCarrierStatementTotalCommissionAmount(carrierStatement.id, totalCommissionAmount);
+      await updateCarrierStatementUnmatchedRows(carrierStatement.id, result.unmatchedRows ?? []);
       
       allMatchedRows.push(...result.matchedRows);
       processedCarriers.push(carrierStatement.carrier);

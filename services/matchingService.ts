@@ -402,21 +402,23 @@ const calculateRoleSplits = (
 };
 
 /**
- * Matches carrier statement rows against master data
+ * Matches carrier statement rows against master data.
+ * Returns both matched rows and unmatched rows (carrier lines not in comp key).
  */
-export const matchCarrierStatements = (
+export function matchCarrierStatements(
   carrierRows: CarrierStatementRow[],
   masterData: MasterRecord[]
-): MatchedRow[] => {
+): { matchedRows: MatchedRow[]; unmatchedRows: CarrierStatementRow[] } {
   if (!carrierRows || carrierRows.length === 0) {
-    return [];
+    return { matchedRows: [], unmatchedRows: [] };
   }
   if (!masterData || masterData.length === 0) {
-    return [];
+    return { matchedRows: [], unmatchedRows: [...carrierRows] };
   }
 
   const compMap = buildCompMap(masterData);
   const matchedRows: MatchedRow[] = [];
+  const unmatchedRows: CarrierStatementRow[] = [];
   
   // Debug: Count how many statement rows have duplicate billing items
   const billingItemCounts = new Map<string, number>();
@@ -447,6 +449,7 @@ export const matchCarrierStatements = (
     const billingItem = row.otgCompBillingItem;
     if (!billingItem) {
       unmatchedCount++;
+      unmatchedRows.push(row);
       return;
     }
 
@@ -454,8 +457,8 @@ export const matchCarrierStatements = (
     const candidates = compMap.get(key);
 
     if (!candidates || !Array.isArray(candidates) || candidates.length === 0) {
-      // No match found - will be handled by dispute detection
       unmatchedCount++;
+      unmatchedRows.push(row);
       return;
     }
 
@@ -465,6 +468,7 @@ export const matchCarrierStatements = (
 
     if (!matchData) {
       unmatchedCount++;
+      unmatchedRows.push(row);
       return;
     }
 
@@ -485,6 +489,7 @@ export const matchCarrierStatements = (
     // Check if codes array is valid (allow empty codes - they'll just result in all OTG)
     if (!Array.isArray(matchData.codes)) {
       unmatchedCount++;
+      unmatchedRows.push(row);
       return;
     }
 
@@ -564,5 +569,5 @@ export const matchCarrierStatements = (
     return sum + toNum(r.roleSplits.RD1 || 0) + toNum(r.roleSplits.RD2 || 0);
   }, 0);
 
-  return matchedRows;
-};
+  return { matchedRows, unmatchedRows };
+}

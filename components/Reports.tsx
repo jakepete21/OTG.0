@@ -1,9 +1,10 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { AnalysisResult, CommissionStatement, CarrierStatementProcessingResult, SellerStatement } from '../types';
-import { Download, ChevronDown, ChevronUp, User, DollarSign, AlertTriangle, Calendar, CheckCircle, XCircle, Trash2, RefreshCw } from 'lucide-react';
+import { Download, ChevronDown, ChevronUp, User, DollarSign, AlertTriangle, Calendar, CheckCircle, XCircle, Trash2, RefreshCw, Filter } from 'lucide-react';
 import { exportCommissionStatementPDF } from '../services/pdfExport';
-import { useProcessingMonths, useSellerStatements, useCarrierStatements, useAllCarrierStatements, useDeleteCarrierStatement, useRegenerateSellerStatements, useRemoveItemsFromSellerStatements, useFixCarrierStatementProcessingMonth } from '../services/firebaseHooks';
-import { getMatchesForCarrierStatement } from '../services/firebaseQueries';
+import { useProcessingMonths, useSellerStatements, useCarrierStatements, useAllCarrierStatements, useDeleteCarrierStatement, useRegenerateSellerStatements, useRemoveItemsFromSellerStatements, useFixCarrierStatementProcessingMonth, useMatchesForProcessingMonth } from '../services/firebaseHooks';
+import type { CarrierStatementDoc } from '../services/firebaseQueries';
 import { CarrierType } from '../services/monthDetection';
 import { formatCurrency } from '../services/numberFormat';
 import { markAsPendingDeletion, removePendingDeletion } from '../services/pendingDeletions';
@@ -62,10 +63,155 @@ interface AccountSummary {
   accountName: string;
   state: string;
   provider: string;
+  carrier?: string;
   totalOtgComp: number;
   totalSellerComp: number;
   itemCount: number;
 }
+
+/** Column filter: text input + Sheets-style value dropdown. Defined at module level so it keeps focus when typing. */
+interface ColumnFilterDropdownProps {
+  columnId: string;
+  label: string;
+  alignRight: boolean;
+  uniqueValues: string[];
+  selectedValues: string[] | null;
+  onSelectedValuesChange: (v: string[] | null) => void;
+  textFilter: string;
+  onTextFilterChange: (v: string) => void;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+const ColumnFilterDropdown: React.FC<ColumnFilterDropdownProps> = ({
+  columnId,
+  label,
+  alignRight,
+  uniqueValues,
+  selectedValues,
+  onSelectedValuesChange,
+  textFilter,
+  onTextFilterChange,
+  isOpen,
+  onOpenChange,
+}) => {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [search, setSearch] = useState('');
+  const [panelPosition, setPanelPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isOpen || !wrapperRef.current) {
+      setPanelPosition(null);
+      return;
+    }
+    const rect = wrapperRef.current.getBoundingClientRect();
+    setPanelPosition({
+      top: rect.bottom + 4,
+      left: rect.left,
+    });
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (wrapperRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      onOpenChange(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [isOpen, onOpenChange]);
+
+  const effectiveSelected = selectedValues ?? uniqueValues;
+  const searchLower = search.trim().toLowerCase();
+  const filteredUnique = searchLower
+    ? uniqueValues.filter(v => v.toLowerCase().includes(searchLower))
+    : uniqueValues;
+
+  const dropdownPanel = panelPosition && (
+    <div
+      ref={panelRef}
+      className="fixed min-w-[200px] max-w-[280px] bg-white border border-slate-200 rounded-lg shadow-lg py-2 z-[9999]"
+      style={{ top: panelPosition.top, left: panelPosition.left, maxHeight: 'min(320px, calc(100vh - 1rem))' }}
+      onClick={e => e.stopPropagation()}
+    >
+      <div className="px-2 pb-2 border-b border-slate-100">
+        <p className="text-xs font-medium text-slate-500 mb-1.5">{label}</p>
+        <input
+          type="text"
+          placeholder="Search list..."
+          className="w-full px-2 py-1 text-xs border border-slate-200 rounded bg-slate-50"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          autoFocus
+        />
+        <div className="flex gap-2 mt-1.5">
+          <button
+            type="button"
+            className="text-xs text-indigo-600 hover:underline"
+            onClick={() => onSelectedValuesChange(null)}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            className="text-xs text-slate-500 hover:underline"
+            onClick={() => onSelectedValuesChange([])}
+          >
+            Deselect all
+          </button>
+        </div>
+      </div>
+      <div className="max-h-[220px] overflow-y-auto overflow-x-hidden px-2 pt-2">
+        {filteredUnique.length === 0 ? (
+          <p className="text-xs text-slate-400">No values</p>
+        ) : (
+          filteredUnique.map(val => {
+            const checked = effectiveSelected.includes(val);
+            return (
+              <label key={val} className="flex items-center gap-2 py-0.5 cursor-pointer hover:bg-slate-50 rounded px-1 -mx-1">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => {
+                    const next = checked
+                      ? effectiveSelected.filter(x => x !== val)
+                      : [...effectiveSelected, val];
+                    onSelectedValuesChange(next.length === uniqueValues.length ? null : next);
+                  }}
+                  className="rounded border-slate-300 text-indigo-600"
+                />
+                <span className="text-xs text-slate-700 truncate" title={val}>{val || '(blank)'}</span>
+              </label>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div ref={wrapperRef} className="relative flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+      <input
+        type="text"
+        placeholder="Text..."
+        className={`flex-1 min-w-0 max-w-[72px] px-1.5 py-0.5 text-xs border border-slate-200 rounded bg-white ${alignRight ? 'text-right' : ''}`}
+        value={textFilter}
+        onChange={e => onTextFilterChange(e.target.value)}
+      />
+      <button
+        type="button"
+        onClick={() => onOpenChange(!isOpen)}
+        className={`p-0.5 rounded border shrink-0 ${isOpen ? 'bg-indigo-100 border-indigo-300 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+        title="Filter by value"
+        aria-label={`Filter ${label}`}
+      >
+        <Filter size={14} />
+      </button>
+      {isOpen && createPortal(dropdownPanel, document.body)}
+    </div>
+  );
+};
 
 /**
  * Wrapper component that queries carrier statements directly for more reliable status
@@ -248,10 +394,20 @@ const MonthSection: React.FC<MonthSectionProps> = ({
 }) => {
   // View toggle: 'account' or 'line-item'
   const [sellerStatementView, setSellerStatementView] = useState<'account' | 'line-item'>('account');
-  
+  // Column filters per table: key = `${roleGroup}_${view}`, value = { columnId: filterText }
+  const [columnFilters, setColumnFilters] = useState<Record<string, Record<string, string>>>({});
+  // Selected values per column (Sheets-style): null = all selected, string[] = only these values
+  const [columnSelectedValues, setColumnSelectedValues] = useState<Record<string, Record<string, string[] | null>>>({});
+  // Which column filter popover is open: `${filterKey}__${columnId}`
+  const [openFilterPopover, setOpenFilterPopover] = useState<string | null>(null);
+  // Column sort per table: key = filterKey, value = { columnId, direction }
+  const [columnSort, setColumnSort] = useState<Record<string, { columnId: string; direction: 'asc' | 'desc' } | null>>({});
+
   // Use hooks for this specific month
   const sellerStatementsForMonth = useSellerStatements(monthData.monthKey);
-  
+  const carrierStatementsForMonth = useCarrierStatements(monthData.monthKey);
+  const matchesForMonth = useMatchesForProcessingMonth(monthData.monthKey);
+
   // Note: mergedCarriers is now passed from MonthSectionWithCarrierQuery wrapper
   // monthData.carriers already contains merged data from the wrapper
   
@@ -344,6 +500,84 @@ const MonthSection: React.FC<MonthSectionProps> = ({
     return Array.from(deduplicated.values());
   }, [monthData.monthKey, sellerStatementsForMonth, carrierStatementResult, optimisticSellerStatements]);
 
+  // Commissionable to OTG = sum of Seller Comp $ from seller statement items, grouped by carrier
+  const commissionableToOtg = useMemo(() => {
+    const totals: Record<string, number> = {};
+    sellerStatements.forEach((stmt) => {
+      (stmt.items || []).forEach((item: { carrier?: string; sellerComp?: number }) => {
+        const carrier = (item.carrier || '').trim();
+        if (!carrier) return;
+        const amount = Number(item.sellerComp) || 0;
+        totals[carrier] = (totals[carrier] ?? 0) + amount;
+      });
+    });
+    return totals;
+  }, [sellerStatements]);
+
+  // Deposit totals = actual OTG Comp $ from each carrier statement (sum of commission amount from every line of the statement)
+  const depositTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    carrierStatementsForMonth.forEach((statement: CarrierStatementDoc) => {
+      if (statement.carrier) {
+        totals[statement.carrier] = statement.totalCommissionAmount ?? 0;
+      }
+    });
+    return totals;
+  }, [carrierStatementsForMonth]);
+
+  // Differences report: why Deposit Total ≠ Commissionable to OTG per carrier
+  const differencesReport = useMemo(() => {
+    const round2 = (x: number) => Math.round(x * 100) / 100;
+    const statementById = new Map<string, CarrierStatementDoc>();
+    carrierStatementsForMonth.forEach((s: CarrierStatementDoc) => {
+      statementById.set(s.id, s);
+    });
+    const matchedTotalByStatement: Record<string, number> = {};
+    matchesForMonth.forEach((m) => {
+      const sid = m.carrierStatementId;
+      const amt = Number((m.matchedRow && m.matchedRow.commissionAmount) ?? 0) || 0;
+      matchedTotalByStatement[sid] = (matchedTotalByStatement[sid] ?? 0) + amt;
+    });
+    const rows: Array<{
+      carrier: string;
+      depositTotal: number;
+      commissionable: number;
+      difference: number;
+      unmatchedDollars: number;
+      splitOrRoundingDollars: number;
+      unmatchedLineItems: Array<{ accountName: string; otgCompBillingItem: string; commissionAmount: number; state?: string }>;
+    }> = [];
+    uploadedCarriers.forEach((carrier) => {
+      const statementId = monthData.carriers[carrier];
+      if (!statementId) return;
+      const statement = statementById.get(statementId);
+      const depositTotal = round2(depositTotals[carrier] ?? 0);
+      const commissionable = round2(commissionableToOtg[carrier] ?? 0);
+      const matchedTotal = round2(matchedTotalByStatement[statementId] ?? 0);
+      const unmatchedDollars = round2(Math.max(0, depositTotal - matchedTotal));
+      const splitOrRoundingDollars = round2(matchedTotal - commissionable);
+      const difference = round2(depositTotal - commissionable);
+      const unmatchedLineItems = (statement?.unmatchedRows ?? []).map((r: any) => ({
+        accountName: r.accountName ?? '',
+        otgCompBillingItem: r.otgCompBillingItem ?? '',
+        commissionAmount: Number(r.commissionAmount) || 0,
+        state: r.state,
+      }));
+      if (difference !== 0 || unmatchedDollars !== 0 || Math.abs(splitOrRoundingDollars) > 0.01 || unmatchedLineItems.length > 0) {
+        rows.push({
+          carrier,
+          depositTotal,
+          commissionable,
+          difference,
+          unmatchedDollars,
+          splitOrRoundingDollars,
+          unmatchedLineItems,
+        });
+      }
+    });
+    return rows;
+  }, [carrierStatementsForMonth, matchesForMonth, monthData.carriers, depositTotals, commissionableToOtg, uploadedCarriers]);
+
   // Aggregate items by account for Account View
   const accountSummariesByRoleGroup = useMemo(() => {
     const summaries = new Map<string, Map<string, AccountSummary>>();
@@ -359,14 +593,16 @@ const MonthSection: React.FC<MonthSectionProps> = ({
           existing.totalOtgComp += item.otgComp || 0;
           existing.totalSellerComp += item.sellerComp || 0;
           existing.itemCount += 1;
-          // Use first non-empty state/provider if current is empty
+          // Use first non-empty state/provider/carrier if current is empty
           if (!existing.state && item.state) existing.state = item.state;
           if (!existing.provider && item.provider) existing.provider = item.provider;
+          if (!existing.carrier && item.carrier) existing.carrier = item.carrier;
         } else {
           accountMap.set(accountKey, {
             accountName: accountKey,
             state: item.state || '',
             provider: item.provider || '',
+            carrier: item.carrier || '',
             totalOtgComp: item.otgComp || 0,
             totalSellerComp: item.sellerComp || 0,
             itemCount: 1,
@@ -478,6 +714,108 @@ const MonthSection: React.FC<MonthSectionProps> = ({
                 </div>
               );
             })}
+          </div>
+        </div>
+
+        {/* Differences report: why Deposit Total ≠ Commissionable to OTG */}
+        {differencesReport.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-slate-200">
+            <p className="text-xs font-medium text-slate-600 mb-2">Differences (Deposit Total vs Commissionable to OTG):</p>
+            <div className="space-y-2 text-sm">
+              {differencesReport.map((row) => (
+                <div key={row.carrier} className="bg-amber-50/80 border border-amber-200/80 rounded-lg px-3 py-2">
+                  <p className="font-medium text-slate-800">
+                    {CARRIER_LABELS[row.carrier as CarrierType] ?? row.carrier}: Deposit {formatCurrency(row.depositTotal)} vs Commissionable {formatCurrency(row.commissionable)}
+                    {row.difference !== 0 && (
+                      <span className="text-amber-700 ml-1">(diff {formatCurrency(row.difference)})</span>
+                    )}
+                  </p>
+                  <ul className="mt-1 text-xs text-slate-600 list-disc list-inside space-y-0.5">
+                    {row.unmatchedDollars > 0 && (
+                      <li>Line items on carrier statement not in comp key: {formatCurrency(row.unmatchedDollars)}</li>
+                    )}
+                    {Math.abs(row.splitOrRoundingDollars) > 0.01 && (
+                      <li>
+                        {row.splitOrRoundingDollars > 0
+                          ? `Matched total exceeds seller comp (rounding/splits): ${formatCurrency(row.splitOrRoundingDollars)}`
+                          : `Seller comp exceeds matched total (rounding/splits): ${formatCurrency(-row.splitOrRoundingDollars)}`}
+                      </li>
+                    )}
+                    {row.difference !== 0 && row.unmatchedDollars === 0 && Math.abs(row.splitOrRoundingDollars) <= 0.01 && (
+                      <li>Difference from rounding across multiple line items</li>
+                    )}
+                  </ul>
+                  {row.unmatchedLineItems.length > 0 && (
+                    <div className="mt-2 overflow-x-auto">
+                      <table className="w-full text-xs border border-slate-200 rounded bg-white">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-600">
+                            <th className="px-2 py-1 text-left font-medium">State</th>
+                            <th className="px-2 py-1 text-left font-medium">Account Name</th>
+                            <th className="px-2 py-1 text-left font-medium">OTG Comp Billing Item</th>
+                            <th className="px-2 py-1 text-right font-medium">Commission $</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {row.unmatchedLineItems.map((item, idx) => (
+                            <tr key={idx} className="border-t border-slate-100">
+                              <td className="px-2 py-1 text-slate-700">{item.state || '-'}</td>
+                              <td className="px-2 py-1 text-slate-700">{item.accountName || '-'}</td>
+                              <td className="px-2 py-1 font-mono text-slate-700">{item.otgCompBillingItem || '-'}</td>
+                              <td className="px-2 py-1 text-right font-mono text-slate-700">{formatCurrency(item.commissionAmount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Commissionable to OTG - sum of Seller Comp $ per carrier from seller statements */}
+        <div className="mt-4 pt-4 border-t border-slate-200">
+          <p className="text-xs font-medium text-slate-600 mb-2">Commissionable to OTG:</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-700">
+            {allCarriers.map((carrier) => {
+              const statementId = monthData.carriers[carrier];
+              const isUploaded = !!statementId && !pendingDeletions.has(String(statementId));
+              const total = commissionableToOtg[carrier] ?? 0;
+              const label = CARRIER_LABELS[carrier];
+              if (!isUploaded) return null;
+              return (
+                <span key={carrier}>
+                  {label}: {formatCurrency(total)}
+                </span>
+              );
+            })}
+            {uploadedCarriers.length === 0 && (
+              <span className="text-slate-500">No carrier statements uploaded</span>
+            )}
+          </div>
+        </div>
+
+        {/* Deposit Totals - actual OTG Comp $ from each carrier statement (sum of commission amount from every line) */}
+        <div className="mt-4 pt-4 border-t border-slate-200">
+          <p className="text-xs font-medium text-slate-600 mb-2">Deposit Totals:</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-700">
+            {allCarriers.map((carrier) => {
+              const statementId = monthData.carriers[carrier];
+              const isUploaded = !!statementId && !pendingDeletions.has(String(statementId));
+              const total = depositTotals[carrier] ?? 0;
+              const label = CARRIER_LABELS[carrier];
+              if (!isUploaded) return null;
+              return (
+                <span key={carrier}>
+                  {label}: {formatCurrency(total)}
+                </span>
+              );
+            })}
+            {uploadedCarriers.length === 0 && (
+              <span className="text-slate-500">No carrier statements uploaded</span>
+            )}
           </div>
         </div>
       </div>
@@ -596,70 +934,297 @@ const MonthSection: React.FC<MonthSectionProps> = ({
 
                     {expandedRoleGroup === stmt.roleGroup && (
                       <div className="border-t border-slate-100 bg-slate-50/50 p-4">
-                        {sellerStatementView === 'account' ? (
+                        {(() => {
+                          const showPctColumn = stmt.roleGroup === 'OTG' || stmt.roleGroup === 'OVR/RD5';
+                          const formatPct = (seller: number, otg: number) =>
+                            otg === 0 ? '-' : `${((seller / otg) * 100).toFixed(1)}%`;
+                          const filterKey = `${stmt.roleGroup}_${sellerStatementView}`;
+                          const filters = columnFilters[filterKey] || {};
+                          const selectedByCol = columnSelectedValues[filterKey] || {};
+                          const setFilter = (col: string, value: string) => {
+                            setColumnFilters(prev => ({
+                              ...prev,
+                              [filterKey]: { ...(prev[filterKey] || {}), [col]: value },
+                            }));
+                          };
+                          const setSelectedValues = (col: string, value: string[] | null) => {
+                            setColumnSelectedValues(prev => ({
+                              ...prev,
+                              [filterKey]: { ...(prev[filterKey] || {}), [col]: value },
+                            }));
+                          };
+                            const popoverKey = (col: string) => `${filterKey}__${col}`;
+                          const sortState = columnSort[filterKey] ?? null;
+                          const setSort = (columnId: string) => {
+                            setColumnSort(prev => {
+                              const current = prev[filterKey];
+                              const nextDir = current?.columnId === columnId && current?.direction === 'asc' ? 'desc' : 'asc';
+                              return { ...prev, [filterKey]: { columnId, direction: nextDir } };
+                            });
+                          };
+                          const matchesFilters = (
+                            getCellValue: (row: any, col: string) => string | number,
+                            row: any,
+                            columnIds: string[]
+                          ) => {
+                            return columnIds.every(col => {
+                              const filterVal = (filters[col] || '').trim();
+                              const cellVal = String(getCellValue(row, col) ?? '');
+                              if (filterVal && !cellVal.toLowerCase().includes(filterVal.toLowerCase())) return false;
+                              const sel = selectedByCol[col];
+                              if (sel != null) {
+                                if (sel.length === 0) return false;
+                                if (!sel.includes(cellVal)) return false;
+                              }
+                              return true;
+                            });
+                            };
+                          return sellerStatementView === 'account' ? (
                           /* Account View */
+                          (() => {
+                            const accountCols = [
+                              { id: 'state', label: 'State', right: false },
+                              { id: 'accountName', label: 'Account Name', right: false },
+                              { id: 'provider', label: 'Provider', right: false },
+                              { id: 'carrier', label: 'Carrier', right: false },
+                              { id: 'itemCount', label: 'Line Items', right: true },
+                              { id: 'totalOtgComp', label: 'OTG Comp $', right: true },
+                              { id: 'totalSellerComp', label: 'Seller Comp $', right: true },
+                              ...(showPctColumn ? [{ id: 'pct', label: '%', right: true }] : []),
+                            ];
+                            const accountNumericCols = new Set(['itemCount', 'totalOtgComp', 'totalSellerComp', 'pct']);
+                            const getAccountCell = (acc: AccountSummary, col: string) =>
+                              col === 'pct' ? formatPct(acc.totalSellerComp, acc.totalOtgComp) : (acc as any)[col];
+                            const filteredAccounts = accounts.filter(acc =>
+                              matchesFilters(getAccountCell, acc, accountCols.map(c => c.id))
+                            );
+                            const sortedAccounts = sortState
+                              ? [...filteredAccounts].sort((a, b) => {
+                                  const col = sortState.columnId;
+                                  const dir = sortState.direction === 'asc' ? 1 : -1;
+                                  if (col === 'pct') {
+                                    const ra = a.totalOtgComp === 0 ? 0 : (a.totalSellerComp / a.totalOtgComp);
+                                    const rb = b.totalOtgComp === 0 ? 0 : (b.totalSellerComp / b.totalOtgComp);
+                                    return dir * (ra - rb);
+                                  }
+                                  const va = getAccountCell(a, col);
+                                  const vb = getAccountCell(b, col);
+                                  if (accountNumericCols.has(col)) {
+                                    const na = Number(va);
+                                    const nb = Number(vb);
+                                    if (Number.isNaN(na) && Number.isNaN(nb)) return 0;
+                                    if (Number.isNaN(na)) return 1;
+                                    if (Number.isNaN(nb)) return -1;
+                                    return dir * (na - nb);
+                                  }
+                                  const sa = String(va ?? '');
+                                  const sb = String(vb ?? '');
+                                  return dir * sa.localeCompare(sb, undefined, { numeric: true });
+                                })
+                              : filteredAccounts;
+                            const filteredItemCount = sortedAccounts.reduce((s, a) => s + a.itemCount, 0);
+                            const filteredOtg = sortedAccounts.reduce((s, a) => s + a.totalOtgComp, 0);
+                            const filteredSeller = sortedAccounts.reduce((s, a) => s + a.totalSellerComp, 0);
+                            const accountUniqueValues = (colId: string) =>
+                              [...new Set(accounts.map(a => String(getAccountCell(a, colId) ?? '')))].sort();
+                            return (
                           <table className="w-full text-sm text-left bg-white border border-slate-200 rounded-lg overflow-hidden">
                             <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                               <tr>
-                                <th className="px-3 py-2 font-medium text-xs">State</th>
-                                <th className="px-3 py-2 font-medium text-xs">Account Name</th>
-                                <th className="px-3 py-2 font-medium text-xs">Provider</th>
-                                <th className="px-3 py-2 font-medium text-xs text-right">Line Items</th>
-                                <th className="px-3 py-2 font-medium text-xs text-right">OTG Comp $</th>
-                                <th className="px-3 py-2 font-medium text-xs text-right">Seller Comp $</th>
+                                {accountCols.map(c => (
+                                  <th
+                                    key={c.id}
+                                    className={`px-3 py-2 font-medium text-xs ${c.right ? 'text-right' : ''} cursor-pointer select-none hover:bg-slate-100`}
+                                    onClick={() => setSort(c.id)}
+                                  >
+                                    <span className="inline-flex items-center gap-0.5">
+                                      {c.label}
+                                      {sortState?.columnId === c.id && (
+                                        sortState.direction === 'asc' ? <ChevronUp size={14} className="shrink-0" /> : <ChevronDown size={14} className="shrink-0" />
+                                      )}
+                                    </span>
+                                  </th>
+                                ))}
+                              </tr>
+                              <tr className="bg-slate-100/80 border-b border-slate-200">
+                                {accountCols.map(c => (
+                                  <th key={c.id} className="px-2 py-1">
+                                    <ColumnFilterDropdown
+                                      columnId={c.id}
+                                      label={c.label}
+                                      alignRight={c.right}
+                                      uniqueValues={accountUniqueValues(c.id)}
+                                      selectedValues={selectedByCol[c.id] ?? null}
+                                      onSelectedValuesChange={v => setSelectedValues(c.id, v)}
+                                      textFilter={filters[c.id] ?? ''}
+                                      onTextFilterChange={v => setFilter(c.id, v)}
+                                      isOpen={openFilterPopover === popoverKey(c.id)}
+                                      onOpenChange={open => setOpenFilterPopover(open ? popoverKey(c.id) : null)}
+                                    />
+                                  </th>
+                                ))}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                              {accounts.map((account, accountIdx) => (
-                                <tr key={accountIdx} className="hover:bg-slate-50">
-                                  <td className="px-3 py-2 text-slate-600 text-xs">{account.state || '-'}</td>
-                                  <td className="px-3 py-2 text-slate-800 text-xs font-medium">{account.accountName}</td>
-                                  <td className="px-3 py-2 text-slate-600 text-xs">{account.provider || '-'}</td>
-                                  <td className="px-3 py-2 text-right text-slate-600 text-xs">{account.itemCount}</td>
-                                  <td className="px-3 py-2 text-right font-mono text-slate-600 text-xs">{formatCurrency(account.totalOtgComp)}</td>
-                                  <td className="px-3 py-2 text-right font-mono font-medium text-indigo-600 text-xs">{formatCurrency(account.totalSellerComp)}</td>
+                              {sortedAccounts.length === 0 ? (
+                                <tr>
+                                  <td colSpan={accountCols.length} className="px-3 py-8 text-center text-slate-500 text-xs align-top" style={{ minHeight: 200 }}>
+                                    No rows match the current filters. Adjust filters or select values again in the filter dropdown.
+                                  </td>
                                 </tr>
-                              ))}
+                              ) : (
+                                sortedAccounts.map((account, accountIdx) => (
+                                  <tr key={accountIdx} className="hover:bg-slate-50">
+                                    <td className="px-3 py-2 text-slate-600 text-xs">{account.state || '-'}</td>
+                                    <td className="px-3 py-2 text-slate-800 text-xs font-medium">{account.accountName}</td>
+                                    <td className="px-3 py-2 text-slate-600 text-xs">{account.provider || '-'}</td>
+                                    <td className="px-3 py-2 text-slate-600 text-xs">{account.carrier || '-'}</td>
+                                    <td className="px-3 py-2 text-right text-slate-600 text-xs">{account.itemCount}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-slate-600 text-xs">{formatCurrency(account.totalOtgComp)}</td>
+                                    <td className="px-3 py-2 text-right font-mono font-medium text-indigo-600 text-xs">{formatCurrency(account.totalSellerComp)}</td>
+                                    {showPctColumn && (
+                                      <td className="px-3 py-2 text-right text-slate-600 text-xs">{formatPct(account.totalSellerComp, account.totalOtgComp)}</td>
+                                    )}
+                                  </tr>
+                                ))
+                              )}
                               <tr className="bg-indigo-50/50 font-bold border-t border-indigo-100">
-                                <td colSpan={3} className="px-3 py-2 text-right text-indigo-900 text-xs">Totals:</td>
-                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{stmt.items.length}</td>
-                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalOtgComp)}</td>
-                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalSellerComp)}</td>
+                                <td colSpan={showPctColumn ? 5 : 4} className="px-3 py-2 text-right text-indigo-900 text-xs">Totals:</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{filteredItemCount}</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(filteredOtg)}</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(filteredSeller)}</td>
+                                {showPctColumn && (
+                                  <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatPct(filteredSeller, filteredOtg)}</td>
+                                )}
                               </tr>
                             </tbody>
                           </table>
+                            );
+                          })()
                         ) : (
                           /* Line Item View */
+                          (() => {
+                            const lineCols = [
+                              { id: 'state', label: 'State', right: false },
+                              { id: 'otgCompBillingItem', label: 'OTG Comp Billing Item', right: false },
+                              { id: 'accountName', label: 'Account Name', right: false },
+                              { id: 'provider', label: 'Provider', right: false },
+                              { id: 'carrier', label: 'Carrier', right: false },
+                              { id: 'otgComp', label: 'OTG Comp $', right: true },
+                              { id: 'sellerComp', label: 'Seller Comp $', right: true },
+                              ...(showPctColumn ? [{ id: 'pct', label: '%', right: true }] : []),
+                            ];
+                            const lineNumericCols = new Set(['otgComp', 'sellerComp', 'pct']);
+                            const getItemCell = (item: any, col: string) =>
+                              col === 'pct' ? formatPct(item.sellerComp ?? 0, item.otgComp ?? 0) : (item[col] ?? '');
+                            const filteredItems = stmt.items.filter((item: any) =>
+                              matchesFilters(getItemCell, item, lineCols.map(c => c.id))
+                            );
+                            const sortedItems = sortState
+                              ? [...filteredItems].sort((a: any, b: any) => {
+                                  const col = sortState.columnId;
+                                  const dir = sortState.direction === 'asc' ? 1 : -1;
+                                  if (col === 'pct') {
+                                    const oa = Number(a.otgComp) || 0;
+                                    const ob = Number(b.otgComp) || 0;
+                                    const ra = oa === 0 ? 0 : ((Number(a.sellerComp) || 0) / oa);
+                                    const rb = ob === 0 ? 0 : ((Number(b.sellerComp) || 0) / ob);
+                                    return dir * (ra - rb);
+                                  }
+                                  const va = getItemCell(a, col);
+                                  const vb = getItemCell(b, col);
+                                  if (lineNumericCols.has(col)) {
+                                    const na = Number(va);
+                                    const nb = Number(vb);
+                                    if (Number.isNaN(na) && Number.isNaN(nb)) return 0;
+                                    if (Number.isNaN(na)) return 1;
+                                    if (Number.isNaN(nb)) return -1;
+                                    return dir * (na - nb);
+                                  }
+                                  const sa = String(va ?? '');
+                                  const sb = String(vb ?? '');
+                                  return dir * sa.localeCompare(sb, undefined, { numeric: true });
+                                })
+                              : filteredItems;
+                            const filteredOtg = sortedItems.reduce((s: number, i: any) => s + (Number(i.otgComp) || 0), 0);
+                            const filteredSeller = sortedItems.reduce((s: number, i: any) => s + (Number(i.sellerComp) || 0), 0);
+                            const lineItemUniqueValues = (colId: string) =>
+                              [...new Set(stmt.items.map((i: any) => String(getItemCell(i, colId) ?? '')))].sort();
+                            return (
                           <table className="w-full text-sm text-left bg-white border border-slate-200 rounded-lg overflow-hidden">
                             <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
                               <tr>
-                                <th className="px-3 py-2 font-medium text-xs">State</th>
-                                <th className="px-3 py-2 font-medium text-xs">OTG Comp Billing Item</th>
-                                <th className="px-3 py-2 font-medium text-xs">Account Name</th>
-                                <th className="px-3 py-2 font-medium text-xs">Provider</th>
-                                <th className="px-3 py-2 font-medium text-xs text-right">OTG Comp $</th>
-                                <th className="px-3 py-2 font-medium text-xs text-right">Seller Comp $</th>
+                                {lineCols.map(c => (
+                                  <th
+                                    key={c.id}
+                                    className={`px-3 py-2 font-medium text-xs ${c.right ? 'text-right' : ''} cursor-pointer select-none hover:bg-slate-100`}
+                                    onClick={() => setSort(c.id)}
+                                  >
+                                    <span className="inline-flex items-center gap-0.5">
+                                      {c.label}
+                                      {sortState?.columnId === c.id && (
+                                        sortState.direction === 'asc' ? <ChevronUp size={14} className="shrink-0" /> : <ChevronDown size={14} className="shrink-0" />
+                                      )}
+                                    </span>
+                                  </th>
+                                ))}
+                              </tr>
+                              <tr className="bg-slate-100/80 border-b border-slate-200">
+                                {lineCols.map(c => (
+                                  <th key={c.id} className="px-2 py-1">
+                                    <ColumnFilterDropdown
+                                      columnId={c.id}
+                                      label={c.label}
+                                      alignRight={c.right}
+                                      uniqueValues={lineItemUniqueValues(c.id)}
+                                      selectedValues={selectedByCol[c.id] ?? null}
+                                      onSelectedValuesChange={v => setSelectedValues(c.id, v)}
+                                      textFilter={filters[c.id] ?? ''}
+                                      onTextFilterChange={v => setFilter(c.id, v)}
+                                      isOpen={openFilterPopover === popoverKey(c.id)}
+                                      onOpenChange={open => setOpenFilterPopover(open ? popoverKey(c.id) : null)}
+                                    />
+                                  </th>
+                                ))}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
-                              {stmt.items.map((item, itemIdx) => (
+                              {sortedItems.length === 0 ? (
+                                <tr>
+                                  <td colSpan={lineCols.length} className="px-3 py-8 text-center text-slate-500 text-xs align-top" style={{ minHeight: 200 }}>
+                                    No rows match the current filters. Adjust filters or select values again in the filter dropdown.
+                                  </td>
+                                </tr>
+                              ) : (
+                                sortedItems.map((item: any, itemIdx: number) => (
                                   <tr key={itemIdx} className="hover:bg-slate-50">
                                     <td className="px-3 py-2 text-slate-600 text-xs">{item.state || '-'}</td>
                                     <td className="px-3 py-2 font-mono font-medium text-slate-800 text-xs">{item.otgCompBillingItem || '-'}</td>
                                     <td className="px-3 py-2 text-slate-800 text-xs">{item.accountName}</td>
                                     <td className="px-3 py-2 text-slate-600 text-xs">{item.provider || '-'}</td>
+                                    <td className="px-3 py-2 text-slate-600 text-xs">{item.carrier || '-'}</td>
                                     <td className="px-3 py-2 text-right font-mono text-slate-600 text-xs">{formatCurrency(item.otgComp)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-medium text-indigo-600 text-xs">{formatCurrency(item.sellerComp)}</td>
+                                    {showPctColumn && (
+                                      <td className="px-3 py-2 text-right text-slate-600 text-xs">{formatPct(item.sellerComp ?? 0, item.otgComp ?? 0)}</td>
+                                    )}
                                   </tr>
-                              ))}
+                                ))
+                              )}
                               <tr className="bg-indigo-50/50 font-bold border-t border-indigo-100">
-                                <td colSpan={4} className="px-3 py-2 text-right text-indigo-900 text-xs">Totals:</td>
-                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalOtgComp)}</td>
-                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(stmt.totalSellerComp)}</td>
+                                <td colSpan={showPctColumn ? 6 : 5} className="px-3 py-2 text-right text-indigo-900 text-xs">Totals:</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(filteredOtg)}</td>
+                                <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatCurrency(filteredSeller)}</td>
+                                {showPctColumn && (
+                                  <td className="px-3 py-2 text-right text-indigo-700 text-xs">{formatPct(filteredSeller, filteredOtg)}</td>
+                                )}
                               </tr>
                             </tbody>
                           </table>
-                        )}
+                            );
+                          })()
+                        );
+                        })()}
                       </div>
                     )}
                   </div>

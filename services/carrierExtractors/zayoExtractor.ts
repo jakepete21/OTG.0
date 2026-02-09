@@ -85,13 +85,19 @@ const isValidState = (state: string): boolean => {
   return /^[A-Z]{2}$/.test(String(state || '').trim());
 };
 
+export interface ZayoExtractResult {
+  rows: CarrierStatementRow[];
+  /** Sum of Commission Amount (USD) for every data row (no row filtering). Used for Deposit Total. */
+  rawTotalCommissionAmount: number;
+}
+
 /**
  * Extracts Zayo statement data from workbook
  */
 export const extractZayoData = async (
   workbook: XLSX.WorkBook,
   getStateForBillingItem: (billingItem: string) => string
-): Promise<CarrierStatementRow[]> => {
+): Promise<ZayoExtractResult> => {
   console.log('=== ZAYO EXTRACTOR - HEADER ANALYSIS ===');
   console.log('Available sheets:', workbook.SheetNames);
   
@@ -121,7 +127,7 @@ export const extractZayoData = async (
   
   if (allData.length === 0) {
     console.log('Sheet is empty!');
-    return [];
+    return { rows: [], rawTotalCommissionAmount: 0 };
   }
   
   // First row is headers
@@ -191,6 +197,7 @@ export const extractZayoData = async (
   const billedAmountCol = findColIndex('Billed Amount (USD)'); // Should be 31
   const billDescriptionCol = findColIndex('Bill Description'); // Should be 19
   const billPeriodCol = findColIndex('Bill/Invoice Period'); // Should be 13
+  const payThisReportingPeriodCol = findColIndex('Pay This Reporting Period');
   
   // State columns - check A Location or Z Location cities for state extraction
   const aLocationCityCol = findColIndex('A Location - City');
@@ -204,6 +211,7 @@ export const extractZayoData = async (
     billedAmountCol,
     billDescriptionCol,
     billPeriodCol,
+    payThisReportingPeriodCol,
     aLocationCityCol,
     zLocationCityCol,
   });
@@ -211,65 +219,67 @@ export const extractZayoData = async (
   const rows: CarrierStatementRow[] = [];
   let processedCount = 0;
   let skippedCount = 0;
-  
+
+  // Only include rows that count toward the deposit total (Pay This Reporting Period = Yes).
+  // We must extract every such row so unmatched-line reporting matches the deposit total.
+  const payThisPeriodOk = (row: any[]): boolean => {
+    if (payThisReportingPeriodCol < 0) return true;
+    const payThisPeriod = String(row[payThisReportingPeriodCol] ?? '').trim().toLowerCase();
+    return payThisPeriod === 'yes';
+  };
+
   // Process data rows (skip first row which is headers, and skip empty rows)
   for (let i = 1; i < allData.length; i++) {
     const row = allData[i];
-    
+
     // Skip empty rows (all empty strings)
-    if (row.every(cell => !cell || String(cell).trim() === '')) {
+    if (row.every((cell: any) => !cell || String(cell).trim() === '')) {
       continue;
     }
-    
+
+    // Only extract rows that count toward deposit total (same set as raw total)
+    if (!payThisPeriodOk(row)) {
+      skippedCount++;
+      continue;
+    }
+
     // Extract fields using exact column indices
     const customerAccount = String(row[customerAccountCol] || '').trim();
     const billingAccountNumber = String(row[billingAccountNumberCol] || '').trim();
     const svcName = String(row[svcNameCol] || '').trim();
     const commissionAmountRaw = row[commissionAmountCol];
     const billedAmountRaw = row[billedAmountCol];
-    
+    const billDescription = billDescriptionCol >= 0 ? String(row[billDescriptionCol] || '').trim() : '';
+
     // Parse amounts - they should already be numbers, but handle strings too
     const commissionAmount = parseCurrency(commissionAmountRaw);
     const invoiceTotal = parseCurrency(billedAmountRaw);
-    
+
     // Skip rows with no commission and no invoice (likely summary/total rows)
     if (commissionAmount === 0 && invoiceTotal === 0) {
       skippedCount++;
       continue;
     }
-    
-    // Skip rows without customer account or billing account number
-    if (!customerAccount && !billingAccountNumber) {
-      skippedCount++;
-      continue;
-    }
-    
+
     // ENA Rule: If Svc Name is blank, use BAN as billing item, set Provider="ENA"
-    let accountName = customerAccount || '';
-    let billingItem = svcName || '';
+    let accountName = customerAccount || billingAccountNumber || billDescription || '(No account)';
+    let billingItem = svcName || billingAccountNumber || billDescription || '(No billing item)';
     let provider = 'Zayo';
-    
+
     if (!svcName && billingAccountNumber) {
       billingItem = billingAccountNumber; // Use BAN as billing item
       provider = 'ENA';
+      if (!accountName || accountName === '(No account)') accountName = billingAccountNumber;
     }
-    
-    // Skip if billing item is still blank after ENA rule
-    if (!billingItem) {
-      skippedCount++;
-      continue;
-    }
-    
-    // State resolution - try to extract from city names or lookup from Master Data
-    let state = '';
-    // For now, we'll lookup state from Master Data using billing item
-    // (Could enhance later to extract state from city names if needed)
-    state = getStateForBillingItem(billingItem);
-    
-    // Extract optional fields
-    const billDescription = billDescriptionCol >= 0 ? String(row[billDescriptionCol] || '').trim() : '';
+
+    // Do NOT skip rows with blank account/billing item - use placeholders so every line
+    // that counts toward deposit total is extracted and can appear in unmatched report.
+
+    // State resolution - lookup from Master Data when we have a real billing item
+    let state = getStateForBillingItem(billingItem);
+
     const billPeriod = billPeriodCol >= 0 ? String(row[billPeriodCol] || '').trim() : '';
-    
+
     rows.push({
       state,
       accountName,
@@ -282,9 +292,9 @@ export const extractZayoData = async (
       billDescription: billDescription || undefined,
       billPeriod: billPeriod || undefined,
     });
-    
+
     processedCount++;
-    
+
     // Debug first few rows
     if (processedCount <= 3) {
       console.log(`Zayo extractor - Processed row ${processedCount}:`, {
@@ -296,14 +306,18 @@ export const extractZayoData = async (
       });
     }
   }
-  
+
+  // Raw total = sum of commission for extracted rows (same set: Pay This Reporting Period = Yes)
+  const rawTotalCommissionAmount = rows.reduce((sum, r) => sum + r.commissionAmount, 0);
+
   console.log(`Zayo extractor - Final summary:`, {
     totalRows: allData.length - 1,
     processed: processedCount,
     skipped: skippedCount,
-    totalCommission: rows.reduce((sum, r) => sum + r.commissionAmount, 0),
+    totalCommissionFromRows: rawTotalCommissionAmount,
+    rawTotalCommissionAmount,
     totalInvoice: rows.reduce((sum, r) => sum + r.invoiceTotal, 0),
   });
-  
-  return rows;
+
+  return { rows, rawTotalCommissionAmount };
 };

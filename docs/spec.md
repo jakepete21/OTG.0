@@ -50,13 +50,18 @@ A commission reconciliation tool that uses AI (Gemini) to match vendor statement
 #### 4. Commissions (`Reports`)
 - **Expandable Month Sections**: Shows January 2026 through June 2026 as expandable accordion sections
 - **Carrier Status Display**: Each month shows carrier upload status (✅ uploaded, ❌ missing) for all 6 carriers
+- **Commissionable to OTG & Deposit Totals**: Per-carrier sums (Commissionable = seller comp from statements; Deposit = actual statement total from every line)
+- **Differences Report**: At top of each month, explains why Deposit Total ≠ Commissionable to OTG (unmatched line items not in comp key; rounding/splits) and lists actual unmatched lines in a table
 - **Status Badges**: Complete (6/6 carriers), Partial (1-5/6), or Empty (0/6) status per month
 - **Seller Statements**: When expanded, shows seller statements grouped by role groups (RD1/2, RD3/4, RM1/2, RM3/4, OVR/RD5, OTG)
 - **Account View & Line Item View**: Toggle between account-level summary or detailed line item view
+- **Column Filters**: Per-column text filter plus Google Sheets-style dropdown (search list, Select all/Deselect all, checkboxes); filter dropdown rendered in portal so it stays visible when table is empty
+- **Sortable Columns**: Click column header to sort asc/desc; numeric and string columns supported
 - **Number Formatting**: All currency amounts display with proper comma formatting (e.g., $1,234.56)
 - Expandable transaction details
 - Export/print functionality (PDF export)
 - **Carrier Statement Management**: Delete carrier statements directly from Commissions tab with confirmation
+- **Tab persistence**: Active tab (Comp Key, Upload, Commissions, etc.) stored in URL hash; reload keeps same tab
 
 #### 5. Statement Compare
 - Compare uploaded CSV/XLSX seller statements (by role group) against Firebase seller statements for a processing month

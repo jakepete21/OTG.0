@@ -49,6 +49,12 @@ export const detectCarrier = (filename: string): string => {
   return carrier || 'Unknown';
 };
 
+export interface ExtractCarrierStatementResult {
+  rows: CarrierStatementRow[];
+  /** When set (e.g. Zayo), use for Deposit Total instead of sum(rows.commissionAmount). */
+  rawTotalCommissionAmount?: number;
+}
+
 /**
  * Extracts carrier statement data from XLSX file using carrier-specific extractors
  * Falls back to AI extraction if carrier-specific extractor not available
@@ -56,7 +62,7 @@ export const detectCarrier = (filename: string): string => {
 export const extractCarrierStatementData = async (
   file: File,
   masterData?: MasterRecord[]
-): Promise<CarrierStatementRow[]> => {
+): Promise<ExtractCarrierStatementResult> => {
   const carrier = detectCarrierFromFilename(file.name);
   
   if (!carrier) {
@@ -78,6 +84,7 @@ export const extractCarrierStatementData = async (
   console.log(`Workbook parsed: ${workbook.SheetNames.length} sheets found`);
   
   let rows: CarrierStatementRow[] = [];
+  let rawTotalCommissionAmount: number | undefined;
   
   // Create state lookup function
   const stateLookupFn = (billingItem: string): string => {
@@ -90,9 +97,12 @@ export const extractCarrierStatementData = async (
   try {
     // Use carrier-specific extractor
     switch (carrier) {
-      case 'Zayo':
-        rows = await extractZayoData(workbook, stateLookupFn);
+      case 'Zayo': {
+        const zayoResult = await extractZayoData(workbook, stateLookupFn);
+        rows = zayoResult.rows;
+        rawTotalCommissionAmount = zayoResult.rawTotalCommissionAmount;
         break;
+      }
       case 'GoTo':
         rows = await extractGoToData(workbook);
         // Lookup states from master data
@@ -177,7 +187,7 @@ export const extractCarrierStatementData = async (
 
   console.log(`Total valid rows: ${validRows.length}`);
 
-  return validRows;
+  return { rows: validRows, rawTotalCommissionAmount };
 };
 
 /**

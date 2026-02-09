@@ -160,9 +160,11 @@ interface SellerStatementItem {
 interface CarrierStatementProcessingResult {
   carrierStatementRows: CarrierStatementRow[];
   matchedRows: MatchedRow[];
+  unmatchedRows: CarrierStatementRow[];  // Lines not matched to comp key (for differences report)
   disputes: Dispute[];
   sellerStatements: SellerStatement[];
   summary: string;
+  rawTotalCommissionAmount?: number;    // Deposit total (e.g. Zayo: sum where Pay This Reporting Period = Yes)
 }
 ```
 
@@ -217,6 +219,8 @@ Stores uploaded carrier statement files and their metadata.
 - `processingMonth` (string) - Processing month in "YYYY-MM" format
 - `fileUrl` (string) - Firebase Cloud Storage URL
 - `uploadedAt` (Timestamp) - Timestamp when uploaded
+- `totalCommissionAmount` (number, optional) - Sum of commission from every line (Deposit Total)
+- `unmatchedRows` (array, optional) - Line items not matched to comp key; each item: `{ accountName, otgCompBillingItem, commissionAmount, state?, accountNumber?, provider?, invoiceTotal? }`. Used by the Commissions Differences report.
 
 **Indexes** (defined in `firestore/firestore.indexes.json`):
 - `processingMonth` (ascending) - Single-field index
@@ -276,6 +280,8 @@ Files are referenced via `fileUrl` in the `carrierStatements` collection. Downlo
 **Mutations** (see `services/firebaseMutations.ts`):
 - `uploadCarrierStatement()` - Upload file to Storage, store metadata in Firestore (handles duplicates)
 - `storeMatches()` - Store matches in batches
+- `updateCarrierStatementTotalCommissionAmount(statementId, total)` - Set Deposit Total on statement
+- `updateCarrierStatementUnmatchedRows(statementId, rows)` - Store line items not in comp key (for Differences report)
 - `regenerateSellerStatements()` - Generate and store seller statements from all matches
 - `removeItemsFromSellerStatements()` - Update seller statements by removing items directly (faster than regenerating)
 - `deleteCarrierStatement()` - Delete statement, matches, file, and update seller statements
@@ -287,13 +293,15 @@ Files are referenced via `fileUrl` in the `carrierStatements` collection. Downlo
 - `getCarrierStatements()` - Get all statements (optionally filtered by processing month)
 - `getCarrierStatementById()` - Get single statement
 - `getSellerStatements()` - Get seller statements for a processing month
-- `getMatchesForCarrierStatement()` - Get all matches for a specific carrier statement
+- `getMatchesForCarrierStatement(statementId)` - Get all matches for a specific carrier statement
+- `getMatchesForProcessingMonth(processingMonth)` - Get all matches for a month (for Differences report)
 - `getMasterData2()` - Get all Master Data 2 records
 - `getFileUrl()` - Get download URL from Storage path or URL
 
 **React Hooks** (see `services/firebaseHooks.ts`):
 - `useCarrierStatements()` - Real-time hook for carrier statements
 - `useSellerStatements()` - Real-time hook for seller statements
+- `useMatchesForProcessingMonth(processingMonth)` - Real-time hook for matches in a month (Differences report)
 - `useProcessingMonths()` - Derive processing months from carrier statements
 - `useCarrierStatementById()` - Real-time hook for single statement
 

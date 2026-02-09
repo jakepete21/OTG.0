@@ -419,10 +419,16 @@ Firebase write operations (mutations).
 #### `uploadCarrierStatement(file: File, metadata: CarrierStatementMetadata): Promise<string>`
 Upload carrier statement file to Cloud Storage and store metadata in Firestore.
 
-#### `storeMatches(matches: MatchedRow[], processingMonth: string, carrierStatementId: string): Promise<void>`
+#### `storeMatches(processingMonth: string, carrierStatementId: string, matchedRowsBatch: MatchedRow[], onProgress?): Promise<{ success: boolean; count: number }>`
 Store matched rows in Firestore (batched writes).
 
-#### `regenerateSellerStatements(processingMonth: string): Promise<void>`
+#### `updateCarrierStatementTotalCommissionAmount(statementId: string, totalCommissionAmount: number): Promise<void>`
+Set the Deposit Total (sum of commission from every line) on a carrier statement.
+
+#### `updateCarrierStatementUnmatchedRows(statementId: string, unmatchedRows: CarrierStatementRow[]): Promise<void>`
+Store line items that could not be matched to comp key; used by the Commissions Differences report.
+
+#### `regenerateSellerStatements(processingMonth: string): Promise<...>`
 Regenerate seller statements from all matches for a processing month.
 
 #### `deleteCarrierStatement(id: string): Promise<void>`
@@ -445,6 +451,9 @@ Derive processing months from carrier statements.
 
 #### `useCarrierStatementById(id: string): CarrierStatement | null`
 Real-time hook for single carrier statement.
+
+#### `useMatchesForProcessingMonth(processingMonth: string | null): MatchDoc[]`
+Real-time hook for all matches in a processing month. Used by the Commissions tab Differences report (Deposit Total vs Commissionable to OTG).
 
 **Used by**: Components for real-time data display
 
